@@ -1,0 +1,110 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: attendance-postgres
+    environment:
+      POSTGRES_DB: attendance
+      POSTGRES_USER: attendance
+      POSTGRES_PASSWORD: attendance
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U attendance -d attendance"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: attendance-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    container_name: attendance-migrate
+    env_file:
+      - ./compose.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["alembic", "upgrade", "head"]
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    container_name: attendance-api
+    env_file:
+      - ./compose.env
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../data:/app/data
+      - ../models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    container_name: attendance-worker
+    env_file:
+      - ./compose.env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../data:/app/data
+      - ../models:/models
+
+  kiosk-ui:
+    build:
+      context: ..
+      dockerfile: docker/kiosk-ui.Dockerfile
+    container_name: attendance-kiosk-ui
+    ports:
+      - "8080:8080"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  kiosk-agent:
+    build:
+      context: ..
+      dockerfile: docker/kiosk-agent.Dockerfile
+    container_name: attendance-kiosk-agent
+    env_file:
+      - ./compose.env
+    environment:
+      BACKEND_BASE_URL: http://api:8000
+      DEVICE_CODE: gate-a01
+    depends_on:
+      api:
+        condition: service_healthy
+    profiles: ["edge"]
+
+volumes:
+  postgres-data:
+
