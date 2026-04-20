@@ -63,22 +63,6 @@ services:
       timeout: 5s
       retries: 5
 
-  worker:
-    build:
-      context: ..
-      dockerfile: docker/worker.Dockerfile
-    container_name: attendance-worker
-    env_file:
-      - ./compose.env
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-      redis:
-        condition: service_healthy
-    volumes:
-      - ../data:/app/data
-      - ../models:/models
-
   kiosk-ui:
     build:
       context: ..
@@ -107,4 +91,3 @@ services:
 
 volumes:
   postgres-data:
-

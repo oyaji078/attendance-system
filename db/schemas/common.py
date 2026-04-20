@@ -44,9 +44,18 @@ class PersonSummary(BaseModel):
 class QualitySnapshot(BaseModel):
     brightness_score: float
     blur_score: float
+    contrast_score: float
+    overexposed_ratio: float
+    underexposed_ratio: float
     liveness_score: float
     face_width_px: int
+    face_center_offset_x: float
+    face_center_offset_y: float
+    pose_yaw: float
+    pose_pitch: float
+    pose_roll: float
+    pose_valid: bool
     accepted: bool
     reason: str
+    ui_hint: str
     flags: dict[str, bool]
-

@@ -18,7 +18,39 @@ class FakeEnrollmentService:
         return {"enrollment_session_id": str(uuid4()), "person_id": str(uuid4()), "required_poses": ["front", "left_20", "right_20", "up_or_down"], "accepted_per_pose": 4, "remaining_per_pose": {"front": 4, "left_20": 4, "right_20": 4, "up_or_down": 4}}
 
     async def process_frame(self, request):
-        return {"enrollment_session_id": str(request.enrollment_session_id), "accepted": True, "reason": "accepted", "pose": request.pose, "pose_accepted_count": 1, "total_accepted_count": 1, "quality": {"brightness_score": 100.0, "blur_score": 120.0, "liveness_score": 0.80, "face_width_px": 180, "accepted": True, "reason": "accepted", "flags": {"exactly_one_face": True}}}
+        return {
+            "enrollment_session_id": str(request.enrollment_session_id),
+            "accepted": True,
+            "reason": "accepted",
+            "pose": request.pose,
+            "pose_accepted_count": 1,
+            "total_accepted_count": 1,
+            "remaining_per_pose": {"front": 3, "left_20": 4, "right_20": 4, "up_or_down": 4},
+            "next_pose": "front",
+            "pose_valid": True,
+            "ui_hint": "Good capture. Hold steady and capture again.",
+            "progress_percent": 6.25,
+            "capture_status": "accepted",
+            "quality": {
+                "brightness_score": 100.0,
+                "blur_score": 120.0,
+                "contrast_score": 42.0,
+                "overexposed_ratio": 0.02,
+                "underexposed_ratio": 0.01,
+                "liveness_score": 0.80,
+                "face_width_px": 180,
+                "face_center_offset_x": 0.03,
+                "face_center_offset_y": 0.02,
+                "pose_yaw": 0.0,
+                "pose_pitch": 0.0,
+                "pose_roll": 0.0,
+                "pose_valid": True,
+                "accepted": True,
+                "reason": "accepted",
+                "ui_hint": "Good lighting and pose.",
+                "flags": {"exactly_one_face": True},
+            },
+        }
 
     async def finish(self, request):
         return {"enrollment_session_id": str(request.enrollment_session_id), "person_id": str(uuid4()), "template_id": str(uuid4()), "total_samples": 16, "activated": True}
@@ -51,4 +83,3 @@ def test_template_rebuild_endpoint() -> None:
     response = client.post(f"/enroll/rebuild-template/{person_id}")
     assert response.status_code == 200
     assert response.json()["person_id"] == person_id
-

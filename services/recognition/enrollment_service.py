@@ -19,6 +19,7 @@ from services.liveness.service import HeuristicPassiveLivenessService
 from services.quality.service import QualityGate
 from services.recognition.frame_codec import decode_frame_b64
 from services.recognition.pipeline import InsightFaceEmbeddingPipeline
+from services.recognition.pose_validator import PoseValidator
 from services.recognition.template_builder import TemplateBuilder
 from services.recognition.types import EnrollmentState
 from services.storage.object_storage import LocalObjectStorage
@@ -40,6 +41,7 @@ class EnrollmentService:
         quality_gate: QualityGate,
         template_builder: TemplateBuilder,
         object_storage: LocalObjectStorage,
+        pose_validator: PoseValidator | None = None,
     ) -> None:
         self.session = session
         self.device_repository = device_repository
@@ -52,6 +54,7 @@ class EnrollmentService:
         self.quality_gate = quality_gate
         self.template_builder = template_builder
         self.object_storage = object_storage
+        self.pose_validator = pose_validator or PoseValidator()
 
     async def start(self, request: EnrollmentStartRequest) -> EnrollmentStartResponse:
         device = await self.device_repository.get_by_code(request.device_code)
@@ -89,7 +92,25 @@ class EnrollmentService:
             raise LookupError(f"device config not found for {request.device_code}")
         pose_count = state.accepted_counts[request.pose]
         if pose_count >= device.accepted_per_pose:
-            quality = QualitySnapshot(brightness_score=0.0, blur_score=0.0, liveness_score=0.0, face_width_px=0, accepted=False, reason="pose_quota_reached", flags={"pose_quota_reached": True})
+            quality = QualitySnapshot(
+                brightness_score=0.0,
+                blur_score=0.0,
+                contrast_score=0.0,
+                overexposed_ratio=0.0,
+                underexposed_ratio=0.0,
+                liveness_score=0.0,
+                face_width_px=0,
+                face_center_offset_x=0.0,
+                face_center_offset_y=0.0,
+                pose_yaw=0.0,
+                pose_pitch=0.0,
+                pose_roll=0.0,
+                pose_valid=False,
+                accepted=False,
+                reason="pose_quota_reached",
+                ui_hint="This pose is already complete. Move to the next pose.",
+                flags={"pose_quota_reached": True},
+            )
             return EnrollmentFrameResponse(
                 enrollment_session_id=state.enrollment_session_id,
                 accepted=False,
@@ -97,6 +118,12 @@ class EnrollmentService:
                 pose=request.pose,
                 pose_accepted_count=pose_count,
                 total_accepted_count=sum(state.accepted_counts.values()),
+                remaining_per_pose=self._remaining_per_pose(state.accepted_counts, device.accepted_per_pose),
+                next_pose=self._next_pose(state.accepted_counts, device.accepted_per_pose),
+                pose_valid=False,
+                ui_hint=quality.ui_hint,
+                progress_percent=self._progress_percent(state.accepted_counts, device.accepted_per_pose),
+                capture_status="pose_complete",
                 quality=quality,
             )
         frame_bytes = decode_frame_b64(request.frame_b64)
@@ -112,6 +139,14 @@ class EnrollmentService:
             liveness=liveness,
             liveness_threshold=device.liveness_threshold,
         )
+        pose_validation = self.pose_validator.validate(request.pose, analysis.faces[0]) if analysis.faces else None
+        if pose_validation is not None and (not quality.accepted or not pose_validation.is_valid):
+            quality.pose_valid = pose_validation.is_valid
+            quality.reason = pose_validation.reason if quality.accepted else quality.reason
+            quality.ui_hint = pose_validation.ui_hint if quality.accepted else quality.ui_hint
+            quality.accepted = quality.accepted and pose_validation.is_valid
+        elif pose_validation is None:
+            quality.pose_valid = False
         if not quality.accepted:
             LOGGER.info("enrollment_frame_rejected", extra={"student_id": state.student_id, "pose": request.pose, "reason": quality.reason})
             return EnrollmentFrameResponse(
@@ -121,6 +156,12 @@ class EnrollmentService:
                 pose=request.pose,
                 pose_accepted_count=pose_count,
                 total_accepted_count=sum(state.accepted_counts.values()),
+                remaining_per_pose=self._remaining_per_pose(state.accepted_counts, device.accepted_per_pose),
+                next_pose=self._next_pose(state.accepted_counts, device.accepted_per_pose),
+                pose_valid=quality.pose_valid,
+                ui_hint=quality.ui_hint,
+                progress_percent=self._progress_percent(state.accepted_counts, device.accepted_per_pose),
+                capture_status="rejected",
                 quality=QualitySnapshot(**asdict(quality)),
             )
         sample_id = uuid4()
@@ -152,6 +193,12 @@ class EnrollmentService:
             pose=request.pose,
             pose_accepted_count=state.accepted_counts[request.pose],
             total_accepted_count=sum(state.accepted_counts.values()),
+            remaining_per_pose=self._remaining_per_pose(state.accepted_counts, device.accepted_per_pose),
+            next_pose=self._next_pose(state.accepted_counts, device.accepted_per_pose),
+            pose_valid=True,
+            ui_hint=self._acceptance_hint(request.pose, state.accepted_counts, device.accepted_per_pose),
+            progress_percent=self._progress_percent(state.accepted_counts, device.accepted_per_pose),
+            capture_status="accepted",
             quality=QualitySnapshot(**asdict(quality)),
         )
 
@@ -208,3 +255,30 @@ class EnrollmentService:
             activated=True,
         )
 
+    @staticmethod
+    def _remaining_per_pose(accepted_counts: dict[str, int], accepted_per_pose: int) -> dict[str, int]:
+        return {
+            pose: max(accepted_per_pose - accepted_counts.get(pose, 0), 0)
+            for pose in REQUIRED_POSES
+        }
+
+    @staticmethod
+    def _next_pose(accepted_counts: dict[str, int], accepted_per_pose: int):
+        for pose in REQUIRED_POSES:
+            if accepted_counts.get(pose, 0) < accepted_per_pose:
+                return pose
+        return None
+
+    @staticmethod
+    def _progress_percent(accepted_counts: dict[str, int], accepted_per_pose: int) -> float:
+        total_required = len(REQUIRED_POSES) * accepted_per_pose
+        total_done = sum(accepted_counts.values())
+        if total_required <= 0:
+            return 0.0
+        return round((total_done / total_required) * 100.0, 2)
+
+    @staticmethod
+    def _acceptance_hint(pose: str, accepted_counts: dict[str, int], accepted_per_pose: int) -> str:
+        if accepted_counts.get(pose, 0) >= accepted_per_pose:
+            return "Pose quota complete. Move to the next pose."
+        return "Good capture. Hold steady and capture again."

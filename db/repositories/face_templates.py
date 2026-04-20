@@ -29,6 +29,23 @@ class FaceTemplateRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_latest_for_person(self, person_id: UUID) -> FaceTemplate | None:
+        result = await self.session.execute(
+            select(FaceTemplate)
+            .where(FaceTemplate.person_id == person_id)
+            .order_by(FaceTemplate.version.desc(), FaceTemplate.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def list_for_person(self, person_id: UUID) -> list[FaceTemplate]:
+        result = await self.session.execute(
+            select(FaceTemplate)
+            .where(FaceTemplate.person_id == person_id)
+            .order_by(FaceTemplate.version.desc(), FaceTemplate.created_at.desc())
+        )
+        return list(result.scalars().all())
+
     async def upsert_active(
         self,
         person_id: UUID,
@@ -37,24 +54,20 @@ class FaceTemplateRepository:
         built_from_session_id: UUID | None,
         metadata_json: dict[str, object],
     ) -> FaceTemplate:
-        template = await self.get_active_for_person(person_id)
-        if template is None:
-            template = FaceTemplate(
-                person_id=person_id,
-                embedding=embedding,
-                version=1,
-                sample_count=sample_count,
-                built_from_session_id=built_from_session_id,
-                metadata_json=metadata_json,
-                is_active=True,
-            )
-            self.session.add(template)
-        else:
-            template.embedding = embedding
-            template.version += 1
-            template.sample_count = sample_count
-            template.built_from_session_id = built_from_session_id
-            template.metadata_json = metadata_json
+        active_template = await self.get_active_for_person(person_id)
+        latest_template = await self.get_latest_for_person(person_id)
+        if active_template is not None:
+            active_template.is_active = False
+        template = FaceTemplate(
+            person_id=person_id,
+            embedding=embedding,
+            version=1 if latest_template is None else latest_template.version + 1,
+            sample_count=sample_count,
+            built_from_session_id=built_from_session_id,
+            metadata_json=metadata_json,
+            is_active=True,
+        )
+        self.session.add(template)
         await self.session.flush()
         return template
 

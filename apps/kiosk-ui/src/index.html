@@ -9,20 +9,136 @@
   <body>
     <main class="layout">
       <section class="panel hero">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Campus Face Recognition Attendance</p>
-          <h1>Web Kiosk</h1>
-          <p class="copy">Browser capture, enrollment guidance, attendance submission, and device status.</p>
+          <h1>Guided 4-Pose Enrollment</h1>
+          <p class="copy">
+            Capture a real front, left, right, and chin-up or chin-down pose. The kiosk validates pose, lighting,
+            sharpness, centering, and liveness before it counts a frame.
+          </p>
+          <div class="mode-switch" role="tablist" aria-label="Kiosk mode">
+            <button id="mode-enroll" class="mode-button is-active" type="button">Enroll</button>
+            <button id="mode-recognize" class="mode-button" type="button">Recognize</button>
+          </div>
         </div>
-        <video id="camera" autoplay muted playsinline></video>
+        <div class="camera-shell">
+          <video id="camera" autoplay muted playsinline></video>
+          <div id="capture-overlay" class="capture-overlay idle">Camera ready</div>
+        </div>
       </section>
-      <section class="grid">
-        <article class="panel"><h2>Enrollment Guidance</h2><ul><li>front</li><li>left_20</li><li>right_20</li><li>up_or_down</li></ul></article>
-        <article class="panel"><h2>Attendance</h2><button id="capture">Capture Burst</button><pre id="result">idle</pre></article>
-        <article class="panel"><h2>Device Status</h2><pre id="status">initializing</pre></article>
+
+      <section class="content-grid">
+        <section id="enrollment-panel" class="panel enrollment-panel">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Enrollment</p>
+              <h2>Four-step wizard</h2>
+            </div>
+            <div class="progress-stack">
+              <div class="progress-copy">
+                <span>Progress</span>
+                <strong id="progress-label">0%</strong>
+              </div>
+              <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+            </div>
+          </div>
+
+          <form id="enrollment-form" class="identity-form">
+            <label>
+              <span>Student ID</span>
+              <input id="student-id" name="student_id" autocomplete="off" placeholder="ST-1001" required />
+            </label>
+            <label>
+              <span>Full name</span>
+              <input id="full-name" name="full_name" autocomplete="name" placeholder="Ada Lovelace" required />
+            </label>
+            <label>
+              <span>Email</span>
+              <input id="email" name="email" autocomplete="email" placeholder="ada@example.edu" />
+            </label>
+            <button id="start-enrollment" type="submit">Start enrollment</button>
+          </form>
+
+          <div id="pose-grid" class="pose-grid" aria-live="polite"></div>
+
+          <div class="wizard-grid">
+            <article class="wizard-card instruction-card">
+              <div class="section-header compact">
+                <div>
+                  <p class="eyebrow">Current Step</p>
+                  <h3 id="current-pose-title">Front pose</h3>
+                </div>
+                <span id="capture-status-badge" class="status-pill idle">Idle</span>
+              </div>
+              <p id="current-pose-instruction" class="instruction-copy">
+                Start enrollment to begin the four-pose capture flow.
+              </p>
+              <div id="pose-visual" class="pose-visual pose-front">
+                <div class="face-outline">
+                  <span class="eye left"></span>
+                  <span class="eye right"></span>
+                  <span class="nose"></span>
+                  <span class="mouth"></span>
+                </div>
+                <span class="cue cue-left"></span>
+                <span class="cue cue-right"></span>
+                <span class="cue cue-up"></span>
+                <span class="cue cue-down"></span>
+              </div>
+              <p id="ui-hint" class="ui-hint neutral">Follow the step instructions and keep your face centered.</p>
+              <div class="action-row">
+                <button id="capture-pose" type="button" disabled>Capture frame</button>
+                <button id="finish-enrollment" type="button" class="secondary" disabled>Finish enrollment</button>
+              </div>
+            </article>
+
+            <article class="wizard-card feedback-card">
+              <div class="section-header compact">
+                <div>
+                  <p class="eyebrow">Validation</p>
+                  <h3>Live feedback</h3>
+                </div>
+              </div>
+              <dl class="metrics-grid">
+                <div><dt>Brightness</dt><dd id="metric-brightness">-</dd></div>
+                <div><dt>Blur</dt><dd id="metric-blur">-</dd></div>
+                <div><dt>Contrast</dt><dd id="metric-contrast">-</dd></div>
+                <div><dt>Overexposed</dt><dd id="metric-overexposed">-</dd></div>
+                <div><dt>Underexposed</dt><dd id="metric-underexposed">-</dd></div>
+                <div><dt>Center offset</dt><dd id="metric-centering">-</dd></div>
+                <div><dt>Yaw / Pitch</dt><dd id="metric-pose">-</dd></div>
+                <div><dt>Liveness</dt><dd id="metric-liveness">-</dd></div>
+              </dl>
+              <pre id="result">idle</pre>
+            </article>
+          </div>
+        </section>
+
+        <section id="recognition-panel" class="panel recognition-panel is-hidden">
+          <div class="section-header">
+            <div>
+              <p class="eyebrow">Attendance</p>
+              <h2>Recognition burst</h2>
+            </div>
+          </div>
+          <p class="copy">Use this mode for the existing three-frame attendance recognition flow.</p>
+          <div class="action-row">
+            <button id="capture-recognition" type="button">Capture burst</button>
+          </div>
+          <pre id="recognition-result">idle</pre>
+        </section>
+
+        <aside class="panel side-panel">
+          <div class="section-header compact">
+            <div>
+              <p class="eyebrow">Device</p>
+              <h3>Status</h3>
+            </div>
+          </div>
+          <pre id="status">initializing</pre>
+        </aside>
       </section>
     </main>
     <script type="module" src="./main.js"></script>
   </body>
   </html>
-

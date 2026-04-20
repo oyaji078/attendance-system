@@ -36,6 +36,12 @@ class EnrollmentFrameResponse(BaseModel):
     pose: PoseName
     pose_accepted_count: int
     total_accepted_count: int
+    remaining_per_pose: dict[PoseName, int]
+    next_pose: PoseName | None
+    pose_valid: bool
+    ui_hint: str
+    progress_percent: float
+    capture_status: str
     quality: QualitySnapshot
 
 
@@ -49,4 +55,3 @@ class EnrollmentFinishResponse(BaseModel):
     template_id: UUID
     total_samples: int
     activated: bool
-

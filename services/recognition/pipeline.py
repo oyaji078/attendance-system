@@ -32,6 +32,7 @@ class InsightFaceEmbeddingPipeline:
         frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             raise ValueError("unable to decode frame bytes")
+        frame_height, frame_width = frame.shape[:2]
         analyzer = self._get_analyzer(det_thresh, det_size)
         with self._lock:
             faces = analyzer.get(frame, max_num=max_faces)
@@ -42,6 +43,13 @@ class InsightFaceEmbeddingPipeline:
                     bbox=tuple(float(value) for value in face.bbox),
                     det_score=float(face.det_score),
                     embedding=face.embedding.astype(np.float32).tolist(),
+                    keypoints=[(float(point[0]), float(point[1])) for point in getattr(face, "kps", [])],
+                    pose_yaw=float(self._safe_pose_component(face, 0)),
+                    pose_pitch=float(self._safe_pose_component(face, 1)),
+                    pose_roll=float(self._safe_pose_component(face, 2)),
+                    center_offset_x=float(self._center_offset_x(face.bbox, frame_width)),
+                    center_offset_y=float(self._center_offset_y(face.bbox, frame_height)),
+                    relative_area=float(self._relative_area(face.bbox, frame_width, frame_height)),
                 )
                 for face in faces
             ],
@@ -60,3 +68,30 @@ class InsightFaceEmbeddingPipeline:
         analyzer.prepare(ctx_id=0 if "CUDAExecutionProvider" in providers else -1, det_thresh=det_thresh, det_size=det_size)
         return analyzer
 
+    @staticmethod
+    def _safe_pose_component(face: object, index: int) -> float:
+        pose = getattr(face, "pose", None)
+        if pose is None:
+            return 0.0
+        try:
+            return float(pose[index])
+        except (IndexError, TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _center_offset_x(bbox: object, frame_width: int) -> float:
+        center_x = (float(bbox[0]) + float(bbox[2])) / 2.0
+        return 0.0 if frame_width <= 0 else ((center_x / frame_width) - 0.5) * 2.0
+
+    @staticmethod
+    def _center_offset_y(bbox: object, frame_height: int) -> float:
+        center_y = (float(bbox[1]) + float(bbox[3])) / 2.0
+        return 0.0 if frame_height <= 0 else ((center_y / frame_height) - 0.5) * 2.0
+
+    @staticmethod
+    def _relative_area(bbox: object, frame_width: int, frame_height: int) -> float:
+        if frame_width <= 0 or frame_height <= 0:
+            return 0.0
+        width = max(0.0, float(bbox[2]) - float(bbox[0]))
+        height = max(0.0, float(bbox[3]) - float(bbox[1]))
+        return (width * height) / float(frame_width * frame_height)

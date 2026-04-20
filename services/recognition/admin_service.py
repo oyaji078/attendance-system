@@ -8,9 +8,14 @@ from db.repositories.face_templates import FaceTemplateRepository
 from db.repositories.metrics import MetricsRepository
 from db.repositories.persons import PersonRepository
 from db.schemas.admin import AdminMetricsResponse, AdminPersonResponse
+from db.schemas.persons import PersonCreateRequest, PersonRead, PersonUpdateRequest
 from services.recognition.template_builder import TemplateBuilder
 
 LOGGER = logging.getLogger(__name__)
+
+
+class PersonConflictError(ValueError):
+    pass
 
 
 class AdminService:
@@ -76,4 +81,73 @@ class AdminService:
             sample_count=projection.sample_count,
             active_template_version=projection.active_template_version,
             last_seen_at=projection.last_seen_at,
+        )
+
+    async def list_persons(self) -> list[PersonRead]:
+        return [self._person_read(projection) for projection in await self.person_repository.list_admin_projections()]
+
+    async def get_person(self, person_id) -> PersonRead | None:
+        projection = await self.person_repository.admin_projection_by_id(person_id)
+        if projection is None:
+            return None
+        return self._person_read(projection)
+
+    async def create_person(self, request: PersonCreateRequest) -> PersonRead:
+        try:
+            person = await self.person_repository.create(
+                student_id=request.student_id,
+                full_name=request.full_name,
+                email=request.email,
+                is_active=request.is_active,
+            )
+        except ValueError as exc:
+            raise PersonConflictError(str(exc)) from exc
+        projection = await self.person_repository.admin_projection_by_id(person.id)
+        if projection is None:
+            raise LookupError(f"person {person.id} not found after create")
+        return self._person_read(projection)
+
+    async def update_person(self, person_id, request: PersonUpdateRequest) -> PersonRead:
+        try:
+            person = await self.person_repository.update(
+                person_id=person_id,
+                student_id=request.student_id,
+                full_name=request.full_name,
+                email=request.email,
+            )
+        except ValueError as exc:
+            raise PersonConflictError(str(exc)) from exc
+        projection = await self.person_repository.admin_projection_by_id(person.id)
+        if projection is None:
+            raise LookupError(f"person {person.id} not found after update")
+        return self._person_read(projection)
+
+    async def deactivate_person(self, person_id) -> PersonRead:
+        person = await self.person_repository.deactivate(person_id)
+        projection = await self.person_repository.admin_projection_by_id(person.id)
+        if projection is None:
+            raise LookupError(f"person {person.id} not found after deactivate")
+        return self._person_read(projection)
+
+    async def reactivate_person(self, person_id) -> PersonRead:
+        person = await self.person_repository.reactivate(person_id)
+        projection = await self.person_repository.admin_projection_by_id(person.id)
+        if projection is None:
+            raise LookupError(f"person {person.id} not found after reactivate")
+        return self._person_read(projection)
+
+    @staticmethod
+    def _person_read(projection) -> PersonRead:
+        return PersonRead(
+            person_id=projection.person.id,
+            student_id=projection.person.student_id,
+            full_name=projection.person.full_name,
+            email=projection.person.email,
+            is_active=projection.person.is_active,
+            primary_template_id=projection.person.primary_template_id,
+            sample_count=projection.sample_count,
+            active_template_version=projection.active_template_version,
+            last_seen_at=projection.last_seen_at,
+            created_at=projection.person.created_at,
+            updated_at=projection.person.updated_at,
         )

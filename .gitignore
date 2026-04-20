@@ -11,9 +11,9 @@ venv/
 data/
 dist/
 build/
+*.egg-info/
 coverage.xml
 htmlcov/
 target/
 Cargo.lock
 node_modules/
-
