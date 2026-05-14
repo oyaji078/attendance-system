@@ -15,3 +15,20 @@ class LocalObjectStorage:
         await asyncio.to_thread(target_path.write_bytes, payload)
         return target_path.as_posix()
 
+    async def delete_paths(self, paths: list[str]) -> int:
+        root = self.root.resolve()
+
+        def delete_one(path_value: str) -> bool:
+            target = Path(path_value).resolve()
+            if not target.is_relative_to(root):
+                return False
+            if not target.is_file():
+                return False
+            target.unlink()
+            return True
+
+        deleted = 0
+        for path in paths:
+            if await asyncio.to_thread(delete_one, path):
+                deleted += 1
+        return deleted

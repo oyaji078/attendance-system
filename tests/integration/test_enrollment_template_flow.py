@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.enrollment import router as enrollment_router
-from app.core.dependencies import get_enrollment_service
+from app.core.dependencies import get_enrollment_service, require_admin
 
 
 class FakeEnrollmentService:
@@ -28,7 +28,7 @@ class FakeEnrollmentService:
             "remaining_per_pose": {"front": 3, "left_20": 4, "right_20": 4, "up_or_down": 4},
             "next_pose": "front",
             "pose_valid": True,
-            "ui_hint": "Good capture. Hold steady and capture again.",
+            "ui_hint": "Bagus, tetap diam.",
             "progress_percent": 6.25,
             "capture_status": "accepted",
             "quality": {
@@ -47,7 +47,7 @@ class FakeEnrollmentService:
                 "pose_valid": True,
                 "accepted": True,
                 "reason": "accepted",
-                "ui_hint": "Good lighting and pose.",
+                "ui_hint": "Bagus, tetap diam.",
                 "flags": {"exactly_one_face": True},
             },
         }
@@ -63,6 +63,7 @@ def build_app() -> FastAPI:
     app = FastAPI()
     app.include_router(enrollment_router)
     app.dependency_overrides[get_enrollment_service] = lambda: FakeEnrollmentService()
+    app.dependency_overrides[require_admin] = lambda: True
     return app
 
 

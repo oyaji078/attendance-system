@@ -8,14 +8,20 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from db.domain.attendance import AttendanceDecision, AttendanceEventType, RecognitionDecision, SessionKind
+
 
 PoseName = Literal["front", "left_20", "right_20", "up_or_down"]
-DecisionType = Literal["recognized", "unknown", "rejected", "cooldown", "session_inactive"]
+DecisionType = RecognitionDecision
+AdminRole = Literal["admin", "operator", "lecturer"]
 REQUIRED_POSES: tuple[PoseName, ...] = ("front", "left_20", "right_20", "up_or_down")
 
 
+MAX_FRAME_B64_LENGTH: int = 10_000_000
+
+
 class FrameInput(BaseModel):
-    frame_b64: str = Field(min_length=32)
+    frame_b64: str = Field(min_length=32, max_length=MAX_FRAME_B64_LENGTH)
     pose_hint: PoseName | None = None
     captured_at: datetime | None = None
 
@@ -38,6 +44,10 @@ class PersonSummary(BaseModel):
     person_id: UUID
     student_id: str
     full_name: str
+    email: str | None = None
+    class_id: UUID | None = None
+    class_code: str | None = None
+    class_name: str | None = None
     template_id: UUID | None = None
 
 
@@ -59,3 +69,7 @@ class QualitySnapshot(BaseModel):
     reason: str
     ui_hint: str
     flags: dict[str, bool]
+    face_bbox: list[float] | None = None
+    face_box_normalized: dict[str, float] | None = None
+    face_center: dict[str, float] | None = None
+    face_size_ratio: float | None = None

@@ -226,5 +226,5 @@ def test_pose_quota_logic_still_blocks_extra_frames() -> None:
 
 def test_finish_fails_when_required_pose_counts_are_incomplete() -> None:
     service, state = build_service(frame=textured_frame(), face=build_face(yaw=0.0))
-    with pytest.raises(ValueError, match="required pose counts"):
+    with pytest.raises(ValueError, match="pose belum lengkap"):
         asyncio.run(service.finish(EnrollmentFinishRequest(enrollment_session_id=state.enrollment_session_id)))

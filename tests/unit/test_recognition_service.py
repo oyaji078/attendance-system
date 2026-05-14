@@ -100,6 +100,7 @@ def test_recognition_service_rejects_session_before_start_window() -> None:
             require_session=True,
         )
     )
-    assert response.decision == "session_inactive"
+    assert response.decision == "rejected"
+    assert response.recognition_status == "session_inactive"
     assert response.reason == "attendance_session_not_started"
     assert len(audit_logger.logged) == 1

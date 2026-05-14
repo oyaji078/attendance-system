@@ -23,6 +23,7 @@ class RedisStateCache:
             "full_name": state.full_name,
             "device_code": state.device_code,
             "accepted_counts": state.accepted_counts,
+            "rejected_counts": state.rejected_counts,
             "started_at": state.started_at.isoformat(),
         }
         await self.redis.set(self._enrollment_key(state.enrollment_session_id), json.dumps(payload), ex=ttl_seconds)
@@ -40,6 +41,7 @@ class RedisStateCache:
             device_code=payload["device_code"],
             accepted_counts={key: int(value) for key, value in payload["accepted_counts"].items()},
             started_at=datetime.fromisoformat(payload["started_at"]),
+            rejected_counts={key: int(value) for key, value in payload.get("rejected_counts", {}).items()},
         )
 
     async def clear_enrollment_state(self, enrollment_session_id: UUID) -> None:
@@ -48,8 +50,9 @@ class RedisStateCache:
     async def set_cooldown(self, session_code: str, person_id: UUID, seconds: int) -> None:
         await self.redis.set(self._cooldown_key(session_code, person_id), "1", ex=seconds)
 
-    async def is_on_cooldown(self, session_code: str, person_id: UUID) -> bool:
-        return await self.redis.exists(self._cooldown_key(session_code, person_id)) == 1
+    async def cooldown_ttl_seconds(self, session_code: str, person_id: UUID) -> int | None:
+        ttl = await self.redis.ttl(self._cooldown_key(session_code, person_id))
+        return ttl if ttl > 0 else None
 
     async def set_recent_match(self, device_code: str, payload: dict[str, object]) -> None:
         await self.redis.set(self._recent_match_key(device_code), json.dumps(payload), ex=self.recent_match_ttl_seconds)
@@ -87,4 +90,3 @@ class RedisStateCache:
     @staticmethod
     def _device_key(device_code: str) -> str:
         return f"device:{device_code}"
-

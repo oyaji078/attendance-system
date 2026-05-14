@@ -2,10 +2,8 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: attendance-postgres
-    environment:
-      POSTGRES_DB: attendance
-      POSTGRES_USER: attendance
-      POSTGRES_PASSWORD: attendance
+    env_file:
+      - ./compose.env
     ports:
       - "5432:5432"
     volumes:
@@ -55,8 +53,11 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ../data:/app/data
-      - ../models:/models
+      - ../models:/app/models
+      - ${APP_DATA_DIR:-../data}:/app/data
+    environment:
+      MODEL_DIR: /app/models
+      DATA_DIR: /app/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 10s

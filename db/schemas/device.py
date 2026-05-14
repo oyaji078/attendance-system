@@ -12,13 +12,14 @@ class DeviceConfigWrite(BaseModel):
     det_thresh: float = Field(default=0.60, ge=0.10, le=0.99)
     det_size: tuple[int, int] = Field(default=(320, 320))
     max_faces: int = Field(default=1, ge=1, le=4)
-    min_face_width_px: int = Field(default=160, ge=32, le=2048)
+    min_face_width_px: int = Field(default=130, ge=32, le=2048)
     min_brightness: float = Field(default=75.0, ge=0.0, le=255.0)
     min_blur_score: float = Field(default=90.0, ge=0.0)
     similarity_threshold: float = Field(default=0.45, ge=0.0, le=1.0)
+    candidate_margin_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
     liveness_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
     multi_frame_confirm: int = Field(default=2, ge=1, le=3)
-    accepted_per_pose: int = Field(default=4, ge=1, le=10)
+    accepted_per_pose: int = Field(default=2, ge=1, le=10)
     cooldown_seconds: int = Field(default=30, ge=0, le=3600)
     is_enabled: bool = True
 
@@ -58,6 +59,7 @@ class DeviceConfigRead(BaseModel):
     min_brightness: float
     min_blur_score: float
     similarity_threshold: float
+    candidate_margin_threshold: float
     liveness_threshold: float
     multi_frame_confirm: int
     accepted_per_pose: int

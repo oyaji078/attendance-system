@@ -17,7 +17,7 @@ from app.core.dependencies import get_attendance_read_service, get_recognition_s
 
 class FakeRecognitionService:
     async def recognize(self, request, event_type: str, require_session: bool = False):
-        return {"decision": "recognized", "reason": "multi_frame_confirm_passed", "confirmed_frames": 2, "device_code": request.device_code, "session_code": request.session_code, "person": {"person_id": str(uuid4()), "student_id": "ST-1001", "full_name": "Ada Lovelace", "template_id": str(uuid4())}, "confidence": 0.82, "top_candidates": []}
+        return {"decision": "accepted", "reason": "multi_frame_confirm_passed", "recognition_status": "recognized", "confirmed_frames": 2, "device_code": request.device_code, "session_code": request.session_code, "person": {"person_id": str(uuid4()), "student_id": "ST-1001", "full_name": "Ada Lovelace", "template_id": str(uuid4())}, "confidence": 0.82, "top_candidates": []}
 
 
 class FakeAttendanceReadService:
@@ -25,7 +25,7 @@ class FakeAttendanceReadService:
         return {"session_code": session_code, "session_name": "Morning Gate", "is_active": True, "total_logs": 3, "recognized": 2, "cooldown": 1, "unknown": 0, "last_event_at": datetime.now(timezone.utc).isoformat()}
 
     async def logs(self, session_code: str):
-        return {"session_code": session_code, "items": [{"id": str(uuid4()), "student_id": "ST-1001", "full_name": "Ada Lovelace", "decision": "recognized", "reason": "multi_frame_confirm_passed", "confidence": 0.82, "device_code": "gate-a01", "event_type": "checkin", "created_at": datetime.now(timezone.utc).isoformat()}]}
+        return {"session_code": session_code, "items": [{"id": str(uuid4()), "student_id": "ST-1001", "full_name": "Ada Lovelace", "decision": "accepted", "reason": "multi_frame_confirm_passed", "confidence": 0.82, "device_code": "gate-a01", "event_type": "checkin", "created_at": datetime.now(timezone.utc).isoformat()}]}
 
 
 def build_app() -> FastAPI:

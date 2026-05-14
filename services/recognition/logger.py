@@ -5,6 +5,7 @@ from dataclasses import asdict
 from statistics import mean
 from uuid import UUID
 
+from db.domain.attendance import normalize_attendance_decision, normalize_attendance_event_type, normalize_attendance_reason
 from db.models.entities import AttendanceLog
 from db.repositories.attendance import AttendanceRepository
 from db.schemas.recognition import RecognitionRequest, RecognitionResponse
@@ -23,24 +24,43 @@ class RecognitionAuditLogger:
         template_id: UUID | None,
         event_type: str,
         frame_decisions: list[RecognitionFrameDecision],
+        captured_image_uri: str | None = None,
     ) -> None:
         session_record = await self.attendance_repository.get_session(request.session_code) if request.session_code else None
+        decision = normalize_attendance_decision(response.decision, response.reason)
+        reason = normalize_attendance_reason(response.reason)
         await self.attendance_repository.add_log(
             AttendanceLog(
                 session_id=session_record.id if session_record else None,
                 person_id=person_id,
                 matched_template_id=template_id,
                 device_code=request.device_code,
-                event_type=event_type,
-                decision=response.decision,
-                reason=response.reason,
+                event_type=normalize_attendance_event_type(event_type),
+                decision=decision,
+                reason=reason,
                 confidence=response.confidence,
                 liveness_score=self._mean_liveness(frame_decisions),
+                captured_image_uri=captured_image_uri,
                 frame_count=len(request.frames),
                 payload_json={
                     "top_candidates": [item.model_dump(mode="json") for item in response.top_candidates],
+                    "matching_diagnostics": {
+                        "top1_distance": response.top1_distance,
+                        "top2_distance": response.top2_distance,
+                        "candidate_margin": response.candidate_margin,
+                        "similarity_threshold": response.similarity_threshold,
+                        "confidence_threshold": response.confidence_threshold,
+                        "margin_threshold": response.margin_threshold,
+                        "required_confirmed_frames": response.required_confirmed_frames,
+                    },
+                    "recognition_status": response.recognition_status,
+                    "recognition_decision": response.decision,
                     "frame_decisions": [self._jsonable(asdict(item)) for item in frame_decisions],
-                    "quality_summary": self._quality_summary(frame_decisions),
+                    "quality_summary": (
+                        response.quality_summary.model_dump(mode="json")
+                        if response.quality_summary is not None
+                        else self._quality_summary(frame_decisions)
+                    ),
                 },
             )
         )

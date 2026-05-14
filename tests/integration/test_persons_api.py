@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.admin import router as admin_router
-from app.core.dependencies import get_admin_service, get_session
+from app.core.dependencies import get_admin_service, get_session, require_admin
 from services.recognition.admin_service import PersonConflictError
 
 
@@ -38,6 +38,9 @@ class InMemoryAdminService:
                 "student_id": "ST-1001",
                 "full_name": "Ada Lovelace",
                 "email": "ada@example.edu",
+                "class_id": None,
+                "class_code": None,
+                "class_name": None,
                 "is_active": True,
                 "primary_template_id": self.template_id,
                 "sample_count": 3,
@@ -55,8 +58,11 @@ class InMemoryAdminService:
             }
         }
 
-    async def list_persons(self) -> list[dict[str, object]]:
-        return list(self.people.values())
+    async def count_persons(self) -> int:
+        return len(self.people)
+
+    async def list_persons(self, limit: int = 25, offset: int = 0) -> list[dict[str, object]]:
+        return list(self.people.values())[offset:offset + limit]
 
     async def get_person(self, person_id: UUID) -> dict[str, object] | None:
         return self.people.get(person_id)
@@ -70,6 +76,9 @@ class InMemoryAdminService:
             "student_id": request.student_id,
             "full_name": request.full_name,
             "email": request.email,
+            "class_id": request.class_id,
+            "class_code": None,
+            "class_name": None,
             "is_active": request.is_active,
             "primary_template_id": None,
             "sample_count": 0,
@@ -91,6 +100,7 @@ class InMemoryAdminService:
         person["student_id"] = request.student_id
         person["full_name"] = request.full_name
         person["email"] = request.email
+        person["class_id"] = request.class_id
         person["updated_at"] = _now()
         return person
 
@@ -158,6 +168,7 @@ def build_app(service: InMemoryAdminService) -> FastAPI:
     app = FastAPI()
     app.include_router(admin_router)
     app.dependency_overrides[get_admin_service] = lambda: service
+    app.dependency_overrides[require_admin] = lambda: True
 
     async def override_session():
         yield FakeSession()

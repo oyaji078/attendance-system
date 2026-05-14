@@ -1,4 +1,5 @@
 const runtimeConfig = window.__ATTENDANCE_KIOSK_CONFIG__ ?? {};
+const urlParams = new URLSearchParams(window.location.search);
 
 function defaultApiBaseUrl() {
   const { protocol, hostname } = window.location;
@@ -8,4 +9,6 @@ function defaultApiBaseUrl() {
 export const kioskConfig = {
   apiBaseUrl: runtimeConfig.apiBaseUrl ?? defaultApiBaseUrl(),
   deviceCode: runtimeConfig.deviceCode ?? "web-kiosk-a01",
+  previewMirrored: runtimeConfig.previewMirrored ?? true,
+  sessionCode: runtimeConfig.sessionCode ?? urlParams.get("session_code") ?? null,
 };

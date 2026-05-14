@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from uuid import UUID
 
-from sqlalchemy import func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models.entities import FaceTemplate, VECTOR_DIMENSION
+from db.models.entities import FaceTemplate
+from db.models.vector import normalize_embedding_for_db
 from db.repositories.match_queries import FACE_TEMPLATE_ANN_QUERY
 
 
@@ -16,7 +18,11 @@ class TemplateMatch:
     person_id: UUID
     student_id: str
     full_name: str
+    class_code: str | None
+    class_name: str | None
     distance: float
+    email: str | None = None
+    class_id: UUID | None = None
 
 
 class FaceTemplateRepository:
@@ -54,13 +60,14 @@ class FaceTemplateRepository:
         built_from_session_id: UUID | None,
         metadata_json: dict[str, object],
     ) -> FaceTemplate:
+        normalized_embedding = normalize_embedding_for_db(embedding)
         active_template = await self.get_active_for_person(person_id)
         latest_template = await self.get_latest_for_person(person_id)
         if active_template is not None:
             active_template.is_active = False
         template = FaceTemplate(
             person_id=person_id,
-            embedding=embedding,
+            embedding=normalized_embedding,
             version=1 if latest_template is None else latest_template.version + 1,
             sample_count=sample_count,
             built_from_session_id=built_from_session_id,
@@ -74,11 +81,10 @@ class FaceTemplateRepository:
     async def search_active(self, query_embedding: list[float], limit: int = 5) -> list[TemplateMatch]:
         if limit < 1:
             raise ValueError("limit must be at least 1")
-        if len(query_embedding) != VECTOR_DIMENSION:
-            raise ValueError(f"query embedding must have dimension {VECTOR_DIMENSION}")
+        normalized_embedding = normalize_embedding_for_db(query_embedding)
         result = await self.session.execute(
             text(FACE_TEMPLATE_ANN_QUERY),
-            {"query_embedding": self._to_vector_literal(query_embedding), "k": limit},
+            {"query_embedding": normalized_embedding, "k": limit},
         )
         return [
             TemplateMatch(
@@ -86,6 +92,10 @@ class FaceTemplateRepository:
                 person_id=row.person_id,
                 student_id=row.student_id,
                 full_name=row.full_name,
+                email=row.email,
+                class_id=row.class_id,
+                class_code=row.class_code,
+                class_name=row.class_name,
                 distance=float(row.distance),
             )
             for row in result
@@ -98,6 +108,14 @@ class FaceTemplateRepository:
     async def reindex_hnsw(self) -> None:
         await self.session.execute(text("REINDEX INDEX face_templates_embedding_hnsw_idx"))
 
-    @staticmethod
-    def _to_vector_literal(embedding: list[float]) -> str:
-        return "[" + ",".join(f"{value:.10f}" for value in embedding) + "]"
+    async def delete_for_person(self, person_id: UUID) -> int:
+        result = await self.session.execute(delete(FaceTemplate).where(FaceTemplate.person_id == person_id))
+        return int(result.rowcount or 0)
+
+    async def deactivate_for_person(self, person_id: UUID) -> int:
+        result = await self.session.execute(
+            update(FaceTemplate)
+            .where(FaceTemplate.person_id == person_id, FaceTemplate.is_active.is_(True))
+            .values(is_active=False, deleted_at=datetime.now(timezone.utc))
+        )
+        return int(result.rowcount or 0)

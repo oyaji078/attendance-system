@@ -24,14 +24,19 @@ class FakeRedis:
     async def exists(self, key: str) -> int:
         return int(key in self.store)
 
+    async def ttl(self, key: str) -> int:
+        return 10 if key in self.store else -2
+
 
 @pytest.mark.asyncio
 async def test_cooldown_round_trip() -> None:
     cache = RedisStateCache(FakeRedis(), heartbeat_ttl_seconds=30, recent_match_ttl_seconds=15)
     person_id = uuid4()
-    assert await cache.is_on_cooldown("session-a", person_id) is False
+    assert await cache.cooldown_ttl_seconds("session-a", person_id) is None
     await cache.set_cooldown("session-a", person_id, seconds=10)
-    assert await cache.is_on_cooldown("session-a", person_id) is True
+    ttl = await cache.cooldown_ttl_seconds("session-a", person_id)
+    assert ttl is not None
+    assert ttl > 0
 
 
 @pytest.mark.asyncio

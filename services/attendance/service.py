@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from db.domain.attendance import normalize_attendance_decision, normalize_attendance_event_type, normalize_attendance_reason
 from db.repositories.attendance import AttendanceRepository
 from db.schemas.attendance import AttendanceLogItem, AttendanceLogsResponse, AttendanceStatusResponse
 
@@ -32,14 +33,13 @@ class AttendanceReadService:
                     id=log.id,
                     student_id=person.student_id if person else None,
                     full_name=person.full_name if person else None,
-                    decision=log.decision,
-                    reason=log.reason,
+                    decision=normalize_attendance_decision(log.decision, log.reason),
+                    reason=normalize_attendance_reason(log.reason),
                     confidence=log.confidence,
                     device_code=log.device_code,
-                    event_type=log.event_type,
+                    event_type=normalize_attendance_event_type(log.event_type),
                     created_at=log.created_at,
                 )
                 for log, person in rows
             ],
         )
-

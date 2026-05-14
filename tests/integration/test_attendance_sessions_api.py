@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.admin import router as admin_router
-from app.core.dependencies import get_attendance_session_service, get_session
+from app.core.dependencies import get_attendance_session_service, get_session, require_admin
 
 
 class DummySession:
@@ -26,7 +26,7 @@ class FakeAttendanceSessionService:
         self.created_id = None
         self.now = now
 
-    async def list_sessions(self):
+    async def list_sessions(self, include_deleted: bool = False):
         return list(self.items.values())
 
     async def get_session(self, session_id):
@@ -90,6 +90,7 @@ def build_app(service: FakeAttendanceSessionService) -> FastAPI:
     async def override_session():
         yield DummySession()
 
+    app.dependency_overrides[require_admin] = lambda: True
     app.dependency_overrides[get_attendance_session_service] = lambda: service
     app.dependency_overrides[get_session] = override_session
     return app
@@ -103,7 +104,7 @@ def test_attendance_session_admin_lifecycle() -> None:
         json={
             "session_code": "morning-gate",
             "session_name": "Morning Gate",
-            "session_kind": "checkin",
+            "session_kind": "lecture",
             "cooldown_seconds": 45,
             "starts_at": None,
             "ends_at": None,
@@ -118,7 +119,7 @@ def test_attendance_session_admin_lifecycle() -> None:
         json={
             "session_code": "morning-gate-updated",
             "session_name": "Morning Gate Updated",
-            "session_kind": "checkin",
+            "session_kind": "lecture",
             "cooldown_seconds": 60,
             "starts_at": None,
             "ends_at": None,

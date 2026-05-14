@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import threading
+import warnings
 from functools import lru_cache
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 import cv2
@@ -17,6 +20,13 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
+os.environ.setdefault("NO_ALBUMENTATIONS_UPDATE", "1")
+warnings.filterwarnings(
+    "ignore",
+    message=r".*estimate.*deprecated.*SimilarityTransform.*",
+    category=FutureWarning,
+)
+
 
 class InsightFaceEmbeddingPipeline:
     def __init__(self, model_name: str, model_root: str, providers: list[str]) -> None:
@@ -28,31 +38,57 @@ class InsightFaceEmbeddingPipeline:
     async def analyze(self, frame_bytes: bytes, det_thresh: float, det_size: tuple[int, int], max_faces: int) -> FrameAnalysis:
         return await asyncio.to_thread(self._analyze_sync, frame_bytes, det_thresh, det_size, max_faces)
 
+    async def warmup(self, det_thresh: float, det_size: tuple[int, int]) -> float:
+        started_at = perf_counter()
+        await asyncio.to_thread(self._get_analyzer, det_thresh, det_size)
+        duration_ms = (perf_counter() - started_at) * 1000.0
+        LOGGER.info(
+            "insightface_pipeline_warmed",
+            extra={"duration_ms": round(duration_ms, 2), "det_thresh": det_thresh, "det_size": det_size},
+        )
+        return duration_ms
+
     def _analyze_sync(self, frame_bytes: bytes, det_thresh: float, det_size: tuple[int, int], max_faces: int) -> FrameAnalysis:
+        started_at = perf_counter()
+        decode_started_at = perf_counter()
         frame = cv2.imdecode(np.frombuffer(frame_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
             raise ValueError("unable to decode frame bytes")
+        decode_ms = (perf_counter() - decode_started_at) * 1000.0
         frame_height, frame_width = frame.shape[:2]
         analyzer = self._get_analyzer(det_thresh, det_size)
+        inference_started_at = perf_counter()
+        detection_limit = max(max_faces + 1, 2)
         with self._lock:
-            faces = analyzer.get(frame, max_num=max_faces)
+            faces = analyzer.get(frame, max_num=detection_limit)
+        inference_ms = (perf_counter() - inference_started_at) * 1000.0
+        faces_payload = [
+            DetectedFace(
+                bbox=tuple(float(value) for value in face.bbox),
+                det_score=float(face.det_score),
+                embedding=[float(value) for value in np.asarray(face.embedding, dtype=np.float32).reshape(-1).tolist()],
+                keypoints=[(float(point[0]), float(point[1])) for point in getattr(face, "kps", [])],
+                pose_yaw=float(self._safe_pose_yaw(face)),
+                pose_pitch=float(self._safe_pose_pitch(face)),
+                pose_roll=float(self._safe_pose_component(face, 2)),
+                center_offset_x=float(self._center_offset_x(face.bbox, frame_width)),
+                center_offset_y=float(self._center_offset_y(face.bbox, frame_height)),
+                relative_area=float(self._relative_area(face.bbox, frame_width, frame_height)),
+            )
+            for face in faces
+        ]
+        LOGGER.info(
+            "insightface_frame_analyzed",
+            extra={
+                "decode_ms": round(decode_ms, 2),
+                "detection_embedding_ms": round(inference_ms, 2),
+                "face_count": len(faces_payload),
+                "total_ms": round((perf_counter() - started_at) * 1000.0, 2),
+            },
+        )
         return FrameAnalysis(
             frame=frame,
-            faces=[
-                DetectedFace(
-                    bbox=tuple(float(value) for value in face.bbox),
-                    det_score=float(face.det_score),
-                    embedding=face.embedding.astype(np.float32).tolist(),
-                    keypoints=[(float(point[0]), float(point[1])) for point in getattr(face, "kps", [])],
-                    pose_yaw=float(self._safe_pose_component(face, 0)),
-                    pose_pitch=float(self._safe_pose_component(face, 1)),
-                    pose_roll=float(self._safe_pose_component(face, 2)),
-                    center_offset_x=float(self._center_offset_x(face.bbox, frame_width)),
-                    center_offset_y=float(self._center_offset_y(face.bbox, frame_height)),
-                    relative_area=float(self._relative_area(face.bbox, frame_width, frame_height)),
-                )
-                for face in faces
-            ],
+            faces=faces_payload,
         )
 
     @lru_cache(maxsize=8)
@@ -77,6 +113,17 @@ class InsightFaceEmbeddingPipeline:
             return float(pose[index])
         except (IndexError, TypeError, ValueError):
             return 0.0
+
+    @classmethod
+    def _safe_pose_pitch(cls, face: object) -> float:
+        # InsightFace stores face.pose as [pitch, yaw, roll].
+        return cls._safe_pose_component(face, 0)
+
+    @classmethod
+    def _safe_pose_yaw(cls, face: object) -> float:
+        # InsightFace stores face.pose as [pitch, yaw, roll]; yaw is the
+        # left/right turn used by left_20 and right_20 enrollment.
+        return cls._safe_pose_component(face, 1)
 
     @staticmethod
     def _center_offset_x(bbox: object, frame_width: int) -> float:

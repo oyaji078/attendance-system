@@ -27,6 +27,7 @@ async def get_device_config(device_code: str, container: AppContainer = Depends(
         min_brightness=config.min_brightness,
         min_blur_score=config.min_blur_score,
         similarity_threshold=config.similarity_threshold,
+        candidate_margin_threshold=config.candidate_margin_threshold,
         liveness_threshold=config.liveness_threshold,
         multi_frame_confirm=config.multi_frame_confirm,
         accepted_per_pose=config.accepted_per_pose,
@@ -48,4 +49,3 @@ async def post_device_heartbeat(device_code: str, request: DeviceHeartbeatWrite,
     if heartbeat is None:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="heartbeat not persisted")
     return DeviceHeartbeatRead.model_validate(heartbeat)
-

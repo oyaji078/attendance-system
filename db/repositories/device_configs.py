@@ -16,6 +16,13 @@ class DeviceConfigRepository:
         result = await self.session.execute(select(DeviceConfig).where(DeviceConfig.device_code == device_code))
         return result.scalar_one_or_none()
 
+    async def list_all(self, limit: int | None = None, offset: int = 0) -> list[DeviceConfig]:
+        stmt = select(DeviceConfig).order_by(DeviceConfig.device_code.asc())
+        if limit is not None:
+            stmt = stmt.offset(offset).limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def upsert(self, device_code: str, payload: Mapping[str, object]) -> DeviceConfig:
         config = await self.get_by_code(device_code)
         if config is None:
@@ -26,4 +33,3 @@ class DeviceConfigRepository:
                 setattr(config, key, value)
         await self.session.flush()
         return config
-

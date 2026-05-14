@@ -74,6 +74,8 @@ def test_audit_logger_persists_liveness_and_quality_summary() -> None:
     asyncio.run(logger.log(response, request, None, None, "checkin", frame_decisions))
     assert len(repository.logs) == 1
     log = repository.logs[0]
+    assert log.decision == "accepted"
+    assert log.reason == "multi_frame_confirm_passed"
     assert log.liveness_score == pytest.approx(0.7)
     assert log.payload_json["quality_summary"]["accepted_frames"] == 1
     assert log.payload_json["quality_summary"]["rejected_frames"] == 1

@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.api.routes.admin import router as admin_router
 from app.api.routes.devices import router as devices_router
-from app.core.dependencies import get_container, get_session
+from app.core.dependencies import get_container, get_session, require_admin
 from db.repositories.device_configs import DeviceConfigRepository
 
 
@@ -41,7 +41,7 @@ def fake_config() -> SimpleNamespace:
     return SimpleNamespace(
         id=uuid4(), device_code="gate-a01", device_name="Main Gate A01", location_hint="North gate",
         det_thresh=0.60, det_size_width=320, det_size_height=320, max_faces=1, min_face_width_px=160,
-        min_brightness=75.0, min_blur_score=90.0, similarity_threshold=0.45, liveness_threshold=0.70,
+        min_brightness=75.0, min_blur_score=90.0, similarity_threshold=0.45, candidate_margin_threshold=0.05, liveness_threshold=0.70,
         multi_frame_confirm=2, accepted_per_pose=4, cooldown_seconds=30, is_enabled=True, updated_at=datetime.now(timezone.utc)
     )
 
@@ -51,6 +51,7 @@ def build_app() -> FastAPI:
     app.include_router(devices_router)
     app.include_router(admin_router)
     app.dependency_overrides[get_container] = lambda: SimpleNamespace(cache=FakeCache())
+    app.dependency_overrides[require_admin] = lambda: True
 
     async def override_session():
         yield FakeSession()
@@ -80,4 +81,3 @@ def test_device_config_get_put_and_heartbeat(monkeypatch: pytest.MonkeyPatch) ->
     assert heartbeat.status_code == 200
     assert heartbeat.json()["queue_depth"] == 2
     assert updated.status_code == 200
-

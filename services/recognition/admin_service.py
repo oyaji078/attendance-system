@@ -10,6 +10,7 @@ from db.repositories.persons import PersonRepository
 from db.schemas.admin import AdminMetricsResponse, AdminPersonResponse
 from db.schemas.persons import PersonCreateRequest, PersonRead, PersonUpdateRequest
 from services.recognition.template_builder import TemplateBuilder
+from services.storage.object_storage import LocalObjectStorage
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class AdminService:
         attendance_repository: AttendanceRepository,
         metrics_repository: MetricsRepository,
         template_builder: TemplateBuilder,
+        object_storage: LocalObjectStorage | None = None,
     ) -> None:
         self.person_repository = person_repository
         self.sample_repository = sample_repository
@@ -34,6 +36,7 @@ class AdminService:
         self.attendance_repository = attendance_repository
         self.metrics_repository = metrics_repository
         self.template_builder = template_builder
+        self.object_storage = object_storage
 
     async def reindex(self) -> None:
         await self.template_repository.reindex_hnsw()
@@ -62,6 +65,12 @@ class AdminService:
         return AdminMetricsResponse(
             total_persons=total_persons,
             active_persons=active_persons,
+            total_students=total_persons,
+            total_lecturers=await self.metrics_repository.lecturer_count(),
+            total_classes=await self.metrics_repository.class_count(),
+            total_enrollments=await self.metrics_repository.sample_count(),
+            today_attendance_count=await self.metrics_repository.today_attendance_count(),
+            unknown_failed_count=await self.metrics_repository.today_failed_count(),
             total_templates=await self.template_repository.total_templates(),
             total_samples=await self.metrics_repository.sample_count(),
             total_logs=attendance_metrics["total_logs"],
@@ -77,14 +86,19 @@ class AdminService:
             student_id=projection.person.student_id,
             full_name=projection.person.full_name,
             is_active=projection.person.is_active,
+            class_code=projection.class_code,
+            class_name=projection.class_name,
             primary_template_id=projection.person.primary_template_id,
             sample_count=projection.sample_count,
             active_template_version=projection.active_template_version,
             last_seen_at=projection.last_seen_at,
         )
 
-    async def list_persons(self) -> list[PersonRead]:
-        return [self._person_read(projection) for projection in await self.person_repository.list_admin_projections()]
+    async def list_persons(self, limit: int = 25, offset: int = 0) -> list[PersonRead]:
+        return [self._person_read(projection) for projection in await self.person_repository.list_admin_projections(limit=limit, offset=offset)]
+
+    async def count_persons(self) -> int:
+        return await self.person_repository.count_active()
 
     async def get_person(self, person_id) -> PersonRead | None:
         projection = await self.person_repository.admin_projection_by_id(person_id)
@@ -98,6 +112,7 @@ class AdminService:
                 student_id=request.student_id,
                 full_name=request.full_name,
                 email=request.email,
+                class_id=request.class_id,
                 is_active=request.is_active,
             )
         except ValueError as exc:
@@ -114,6 +129,7 @@ class AdminService:
                 student_id=request.student_id,
                 full_name=request.full_name,
                 email=request.email,
+                class_id=request.class_id,
             )
         except ValueError as exc:
             raise PersonConflictError(str(exc)) from exc
@@ -124,6 +140,8 @@ class AdminService:
 
     async def deactivate_person(self, person_id) -> PersonRead:
         person = await self.person_repository.deactivate(person_id)
+        await self.template_repository.deactivate_for_person(person.id)
+        await self.sample_repository.deactivate_for_person(person.id)
         projection = await self.person_repository.admin_projection_by_id(person.id)
         if projection is None:
             raise LookupError(f"person {person.id} not found after deactivate")
@@ -136,6 +154,43 @@ class AdminService:
             raise LookupError(f"person {person.id} not found after reactivate")
         return self._person_read(projection)
 
+    async def delete_person(self, person_id) -> dict[str, int | str]:
+        person = await self.person_repository.soft_delete(person_id)
+        templates_deactivated = await self.template_repository.deactivate_for_person(person.id)
+        samples_deactivated = await self.sample_repository.deactivate_for_person(person.id)
+        return {
+            "templates_deactivated": templates_deactivated,
+            "samples_deactivated": samples_deactivated,
+            "status": "deleted",
+        }
+
+    async def clear_person_face_data(self, person_id) -> dict[str, int]:
+        person = await self.person_repository.clear_face_profile(person_id)
+        samples = await self.sample_repository.list_for_person(person.id, active_only=True)
+        image_paths = [sample.image_uri for sample in samples if sample.image_uri]
+        attendance_refs_cleared = 0
+        templates_deleted = await self.template_repository.deactivate_for_person(person.id)
+        samples_deleted = await self.sample_repository.deactivate_for_person(person.id)
+        files_deleted = 0
+        LOGGER.info(
+            "person_face_data_cleared",
+            extra={
+                "person_id": str(person.id),
+                "student_id": person.student_id,
+                "samples_deleted": samples_deleted,
+                "templates_deleted": templates_deleted,
+                "files_deleted": files_deleted,
+                "attendance_refs_cleared": attendance_refs_cleared,
+                "files_hidden_not_deleted": len(image_paths),
+            },
+        )
+        return {
+            "samples_deleted": samples_deleted,
+            "templates_deleted": templates_deleted,
+            "files_deleted": files_deleted,
+            "attendance_refs_cleared": attendance_refs_cleared,
+        }
+
     @staticmethod
     def _person_read(projection) -> PersonRead:
         return PersonRead(
@@ -143,6 +198,9 @@ class AdminService:
             student_id=projection.person.student_id,
             full_name=projection.person.full_name,
             email=projection.person.email,
+            class_id=projection.person.class_id,
+            class_code=projection.class_code,
+            class_name=projection.class_name,
             is_active=projection.person.is_active,
             primary_template_id=projection.person.primary_template_id,
             sample_count=projection.sample_count,

@@ -4,10 +4,19 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
-from db.models.entities import AttendanceLog, AttendanceSession, Person
+from db.domain.attendance import (
+    ATTENDANCE_SUCCESS_DECISIONS,
+    COOLDOWN_REASONS,
+    normalize_attendance_decision,
+    normalize_attendance_event_type,
+    normalize_attendance_reason,
+    normalize_session_kind,
+)
+from db.models.entities import AttendanceLog, AttendanceSession, ClassGroup, Lecturer, Person
 
 
 @dataclass(slots=True)
@@ -28,6 +37,9 @@ class AttendanceSessionProjection:
     cooldown: int
     unknown: int
     last_event_at: datetime | None
+    class_code: str | None = None
+    class_name: str | None = None
+    lecturer_name: str | None = None
 
 
 class AttendanceRepository:
@@ -35,38 +47,79 @@ class AttendanceRepository:
         self.session = session
 
     @staticmethod
-    def _session_projection_statement():
-        return (
+    def _session_projection_statement(include_deleted: bool = False):
+        session_lecturer = aliased(Lecturer)
+        class_lecturer = aliased(Lecturer)
+        lecturer_name = func.coalesce(session_lecturer.full_name, class_lecturer.full_name).label("lecturer_name")
+        success_condition = AttendanceLog.decision.in_(ATTENDANCE_SUCCESS_DECISIONS)
+        cooldown_condition = or_(AttendanceLog.decision == "cooldown", AttendanceLog.reason.in_(COOLDOWN_REASONS))
+        unknown_condition = and_(AttendanceLog.id.is_not(None), ~success_condition, ~cooldown_condition)
+        statement = (
             select(
                 AttendanceSession,
                 func.count(AttendanceLog.id).label("total_logs"),
-                func.sum(case((AttendanceLog.decision == "recognized", 1), else_=0)).label("recognized"),
-                func.sum(case((AttendanceLog.decision == "cooldown", 1), else_=0)).label("cooldown"),
-                func.sum(case((AttendanceLog.decision == "unknown", 1), else_=0)).label("unknown"),
+                func.sum(case((success_condition, 1), else_=0)).label("recognized"),
+                func.sum(case((cooldown_condition, 1), else_=0)).label("cooldown"),
+                func.sum(case((unknown_condition, 1), else_=0)).label("unknown"),
                 func.max(AttendanceLog.created_at).label("last_event_at"),
+                ClassGroup.class_code,
+                ClassGroup.class_name,
+                lecturer_name,
             )
+            .outerjoin(ClassGroup, ClassGroup.id == AttendanceSession.class_id)
+            .outerjoin(session_lecturer, session_lecturer.id == AttendanceSession.lecturer_id)
+            .outerjoin(class_lecturer, class_lecturer.id == ClassGroup.lecturer_id)
             .outerjoin(AttendanceLog, AttendanceLog.session_id == AttendanceSession.id)
-            .group_by(AttendanceSession.id)
+            .group_by(AttendanceSession.id, ClassGroup.class_code, ClassGroup.class_name, session_lecturer.full_name, class_lecturer.full_name)
+        )
+        if not include_deleted:
+            statement = statement.where(AttendanceSession.is_deleted.is_(False))
+        return statement
+
+    @staticmethod
+    def _session_available_filter(now: datetime):
+        return (
+            AttendanceSession.is_deleted.is_(False),
+            AttendanceSession.is_active.is_(True),
+            or_(AttendanceSession.starts_at.is_(None), AttendanceSession.starts_at <= now),
+            or_(AttendanceSession.ends_at.is_(None), AttendanceSession.ends_at >= now),
         )
 
-    async def get_session(self, session_code: str) -> AttendanceSession | None:
-        result = await self.session.execute(select(AttendanceSession).where(AttendanceSession.session_code == session_code))
+    async def get_session(self, session_code: str, *, include_deleted: bool = False) -> AttendanceSession | None:
+        statement = select(AttendanceSession).where(AttendanceSession.session_code == session_code)
+        if not include_deleted:
+            statement = statement.where(AttendanceSession.is_deleted.is_(False))
+        result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_session_by_id(self, session_id: UUID) -> AttendanceSession | None:
-        result = await self.session.execute(select(AttendanceSession).where(AttendanceSession.id == session_id))
+    async def get_session_by_id(self, session_id: UUID, *, include_deleted: bool = False) -> AttendanceSession | None:
+        statement = select(AttendanceSession).where(AttendanceSession.id == session_id)
+        if not include_deleted:
+            statement = statement.where(AttendanceSession.is_deleted.is_(False))
+        result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_session_projection(self, session_id: UUID) -> AttendanceSessionProjection | None:
-        result = await self.session.execute(self._session_projection_statement().where(AttendanceSession.id == session_id))
+    async def get_session_projection(self, session_id: UUID, *, include_deleted: bool = False) -> AttendanceSessionProjection | None:
+        result = await self.session.execute(self._session_projection_statement(include_deleted=include_deleted).where(AttendanceSession.id == session_id))
         row = result.one_or_none()
         if row is None:
             return None
         return self._projection_from_row(row)
 
-    async def list_session_projections(self) -> list[AttendanceSessionProjection]:
+    async def list_session_projections(self, *, include_deleted: bool = False) -> list[AttendanceSessionProjection]:
         result = await self.session.execute(
-            self._session_projection_statement().order_by(AttendanceSession.created_at.desc(), AttendanceSession.session_code.asc())
+            self._session_projection_statement(include_deleted=include_deleted).order_by(AttendanceSession.created_at.desc(), AttendanceSession.session_code.asc())
+        )
+        return [self._projection_from_row(row) for row in result.all()]
+
+    async def list_available_session_projections_for_class(self, class_id: UUID, now: datetime) -> list[AttendanceSessionProjection]:
+        result = await self.session.execute(
+            self._session_projection_statement()
+            .where(
+                AttendanceSession.class_id == class_id,
+                *self._session_available_filter(self._as_utc(now)),
+            )
+            .order_by(AttendanceSession.starts_at.asc().nulls_last(), AttendanceSession.created_at.asc())
         )
         return [self._projection_from_row(row) for row in result.all()]
 
@@ -75,6 +128,9 @@ class AttendanceRepository:
         session_code: str,
         session_name: str,
         session_kind: str,
+        class_id: UUID | None,
+        lecturer_id: UUID | None,
+        device_code: str | None,
         cooldown_seconds: int,
         starts_at: datetime | None,
         ends_at: datetime | None,
@@ -84,7 +140,10 @@ class AttendanceRepository:
         session = AttendanceSession(
             session_code=session_code,
             session_name=session_name,
-            session_kind=session_kind,
+            session_kind=normalize_session_kind(session_kind),
+            class_id=class_id,
+            lecturer_id=lecturer_id,
+            device_code=device_code,
             cooldown_seconds=cooldown_seconds,
             starts_at=starts_at,
             ends_at=ends_at,
@@ -100,6 +159,9 @@ class AttendanceRepository:
         session_code: str,
         session_name: str,
         session_kind: str,
+        class_id: UUID | None,
+        lecturer_id: UUID | None,
+        device_code: str | None,
         cooldown_seconds: int,
         starts_at: datetime | None,
         ends_at: datetime | None,
@@ -111,7 +173,10 @@ class AttendanceRepository:
         await self._ensure_session_code_available(session_code, exclude_session_id=session_id)
         session.session_code = session_code
         session.session_name = session_name
-        session.session_kind = session_kind
+        session.session_kind = normalize_session_kind(session_kind)
+        session.class_id = class_id
+        session.lecturer_id = lecturer_id
+        session.device_code = device_code
         session.cooldown_seconds = cooldown_seconds
         session.starts_at = starts_at
         session.ends_at = ends_at
@@ -127,6 +192,14 @@ class AttendanceRepository:
         await self.session.flush()
         return session
 
+    async def deactivate_session(self, session_id: UUID) -> AttendanceSession:
+        session = await self.get_session_by_id(session_id)
+        if session is None:
+            raise LookupError(f"attendance session {session_id} not found")
+        session.is_active = False
+        await self.session.flush()
+        return session
+
     async def close_session(self, session_id: UUID, closed_at: datetime) -> AttendanceSession:
         session = await self.get_session_by_id(session_id)
         if session is None:
@@ -137,10 +210,42 @@ class AttendanceRepository:
         await self.session.flush()
         return session
 
+    async def count_logs_for_session(self, session_id: UUID) -> int:
+        result = await self.session.execute(select(func.count(AttendanceLog.id)).where(AttendanceLog.session_id == session_id))
+        return int(result.scalar_one())
+
+    async def hard_delete_session(self, session_id: UUID) -> int:
+        result = await self.session.execute(delete(AttendanceSession).where(AttendanceSession.id == session_id))
+        return int(result.rowcount or 0)
+
+    async def archive_session(self, session_id: UUID, deleted_at: datetime) -> AttendanceSession:
+        session = await self.get_session_by_id(session_id, include_deleted=True)
+        if session is None:
+            raise LookupError(f"attendance session {session_id} not found")
+        session.is_active = False
+        session.is_deleted = True
+        session.deleted_at = deleted_at
+        await self.session.flush()
+        return session
+
     async def add_log(self, log: AttendanceLog) -> AttendanceLog:
+        log.decision = normalize_attendance_decision(log.decision, log.reason)
+        log.reason = normalize_attendance_reason(log.reason)
+        log.event_type = normalize_attendance_event_type(log.event_type)
         self.session.add(log)
         await self.session.flush()
         return log
+
+    async def clear_matched_templates_for_person(self, person_id: UUID) -> int:
+        result = await self.session.execute(
+            update(AttendanceLog)
+            .where(
+                AttendanceLog.person_id == person_id,
+                AttendanceLog.matched_template_id.is_not(None),
+            )
+            .values(matched_template_id=None)
+        )
+        return int(result.rowcount or 0)
 
     async def get_status(self, session_code: str) -> AttendanceStatusProjection | None:
         result = await self.session.execute(self._session_projection_statement().where(AttendanceSession.session_code == session_code))
@@ -162,7 +267,7 @@ class AttendanceRepository:
             select(AttendanceLog, Person)
             .join(AttendanceSession, AttendanceSession.id == AttendanceLog.session_id)
             .outerjoin(Person, Person.id == AttendanceLog.person_id)
-            .where(AttendanceSession.session_code == session_code)
+            .where(AttendanceSession.session_code == session_code, AttendanceLog.is_deleted.is_(False))
             .order_by(AttendanceLog.created_at.desc())
         )
         return list(result.all())
@@ -172,7 +277,7 @@ class AttendanceRepository:
         total_logs = await self.session.execute(select(func.count(AttendanceLog.id)))
         recognized = await self.session.execute(
             select(func.count(AttendanceLog.id)).where(
-                AttendanceLog.decision == "recognized",
+                AttendanceLog.decision.in_(ATTENDANCE_SUCCESS_DECISIONS),
                 AttendanceLog.created_at >= window_start,
             )
         )
@@ -183,26 +288,39 @@ class AttendanceRepository:
 
     @staticmethod
     def availability_reason(session: AttendanceSession, now: datetime | None = None) -> str | None:
-        timestamp = now or datetime.now(timezone.utc)
+        timestamp = AttendanceRepository._as_utc(now or datetime.now(timezone.utc))
+        starts_at = AttendanceRepository._as_utc(session.starts_at)
+        ends_at = AttendanceRepository._as_utc(session.ends_at)
+        if session.is_deleted:
+            return "attendance_session_deleted"
         if not session.is_active:
             return "attendance_session_inactive"
-        if session.starts_at is not None and timestamp < session.starts_at:
+        if starts_at is not None and timestamp < starts_at:
             return "attendance_session_not_started"
-        if session.ends_at is not None and timestamp > session.ends_at:
+        if ends_at is not None and timestamp > ends_at:
             return "attendance_session_ended"
         return None
 
     async def _ensure_session_code_available(self, session_code: str, exclude_session_id: UUID | None = None) -> None:
-        existing = await self.get_session(session_code)
+        existing = await self.get_session(session_code, include_deleted=True)
         if existing is None:
             return
         if exclude_session_id is not None and existing.id == exclude_session_id:
             return
         raise ValueError(f"session_code {session_code} already exists")
 
+    async def session_code_exists(self, session_code: str) -> bool:
+        return await self.get_session(session_code, include_deleted=True) is not None
+
     @staticmethod
-    def _projection_from_row(row: tuple[AttendanceSession, int, int, int, int, datetime | None]) -> AttendanceSessionProjection:
-        session, total_logs, recognized, cooldown, unknown, last_event_at = row
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _projection_from_row(row: tuple[AttendanceSession, int, int, int, int, datetime | None, str | None, str | None, str | None]) -> AttendanceSessionProjection:
+        session, total_logs, recognized, cooldown, unknown, last_event_at, class_code, class_name, lecturer_name = row
         return AttendanceSessionProjection(
             session=session,
             total_logs=int(total_logs or 0),
@@ -210,4 +328,7 @@ class AttendanceRepository:
             cooldown=int(cooldown or 0),
             unknown=int(unknown or 0),
             last_event_at=last_event_at,
+            class_code=class_code,
+            class_name=class_name,
+            lecturer_name=lecturer_name,
         )

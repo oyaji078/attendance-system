@@ -26,6 +26,26 @@ docker compose -f docker/docker-compose.yml up --build
 
 The compose path uses `docker/compose.env` and runs Alembic migrations before the API starts.
 
+### Windows Docker setup on `D:`
+
+If Docker Desktop is not installed yet, use the helper script below. It downloads the latest installer, installs Docker Desktop to `D:\DockerDesktop\app`, and places the WSL/containers data roots under `D:\DockerDesktop\...`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-docker-desktop-d.ps1
+```
+
+After Docker Desktop finishes installing and reaches the `Running` state, bring the project stack up with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker-up.ps1
+```
+
+Use the kiosk agent profile when needed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\docker-up.ps1 -EdgeProfile
+```
+
 ## Key Endpoints
 
 - `GET /devices/config/{device_code}`
