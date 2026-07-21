@@ -53,16 +53,12 @@ if (-not $NoFrontend) {
 }
 
 Write-Section 'URLs'
-Write-Host "API:       http://localhost:$ApiPort"
-Write-Host "OpenAPI:   http://localhost:$ApiPort/docs"
-Write-Host "OpenAPI JSON: http://localhost:$ApiPort/openapi.json"
+Write-Host "App (kiosk + API): http://localhost:$ApiPort      <- the API serves the kiosk too"
+Write-Host "API docs:          http://localhost:$ApiPort/docs"
 if (-not $NoFrontend) {
-    if ($ApiPort -ne 8000) {
-        Write-Host "Kiosk UI:  http://localhost:$KioskPort?api_base_url=http://localhost:$ApiPort"
-    }
-    else {
-        Write-Host "Kiosk UI:  http://localhost:$KioskPort"
-    }
+    Write-Host "Kiosk (dev live):  http://localhost:$KioskPort   (optional; use $ApiPort for one origin)"
 }
-Write-Host 'DB browser: run .\scripts\db-browser.ps1, then open http://localhost:8081'
+Write-Host 'DB browser:        run .\scripts\db-browser.ps1, then open http://localhost:8081'
+Write-Host ''
+Write-Host "Test on your phone (HTTPS): powershell -ExecutionPolicy Bypass -File .\scripts\tunnel-cloudflare.ps1 -Port $ApiPort"
 
