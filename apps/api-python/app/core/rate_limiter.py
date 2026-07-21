@@ -62,6 +62,51 @@ async def _async_is_allowed(limiter: InMemoryRateLimiter | RedisRateLimiter, key
     return await limiter.is_allowed(key)
 
 
+# Multiple kiosks often share one public IP (NAT/tunnel). ML and attendance
+# quotas are therefore keyed per device_code when the payload carries one, so
+# one busy kiosk cannot starve the others. A wider per-IP umbrella (this
+# multiplier x the device quota) still caps a client that rotates fake device
+# codes from a single address.
+IP_UMBRELLA_MULTIPLIER = 5
+
+
+async def _request_device_code(request: Request) -> str | None:
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    try:
+        payload = await request.json()
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    device_code = payload.get("device_code")
+    if isinstance(device_code, str) and 0 < len(device_code) <= 64:
+        return device_code
+    return None
+
+
+async def _enforce_device_scoped_limit(
+    request: Request,
+    *,
+    scope: str,
+    max_attempts: int,
+    window_seconds: int,
+    detail: str,
+) -> None:
+    client_ip = request.client.host if request.client else "unknown"
+    device_code = await _request_device_code(request)
+    limiter = _build_rate_limiter(request, max_attempts, window_seconds)
+    primary_key = f"{scope}:device:{device_code}" if device_code else f"{scope}:{client_ip}"
+    if not await _async_is_allowed(limiter, primary_key):
+        LOGGER.warning("rate_limit_exceeded", extra={"client_ip": client_ip, "key_type": scope, "device_code": device_code})
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
+    if device_code:
+        umbrella = _build_rate_limiter(request, max_attempts * IP_UMBRELLA_MULTIPLIER, window_seconds)
+        if not await _async_is_allowed(umbrella, f"{scope}:ip-umbrella:{client_ip}"):
+            LOGGER.warning("rate_limit_exceeded", extra={"client_ip": client_ip, "key_type": f"{scope}-ip-umbrella"})
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
+
+
 async def rate_limit_login_dependency(request: Request) -> None:
     from app.core.config import get_settings
 
@@ -80,14 +125,13 @@ async def rate_limit_ml_dependency(request: Request) -> None:
     from app.core.config import get_settings
 
     settings = get_settings()
-    client_ip = request.client.host if request.client else "unknown"
-    limiter = _build_rate_limiter(request, settings.ml_rate_limit_max, settings.ml_rate_limit_window_seconds)
-    if not await _async_is_allowed(limiter, f"ml:{client_ip}"):
-        LOGGER.warning("rate_limit_exceeded", extra={"client_ip": client_ip, "key_type": "ml"})
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many requests. Please try again later.",
-        )
+    await _enforce_device_scoped_limit(
+        request,
+        scope="ml",
+        max_attempts=settings.ml_rate_limit_max,
+        window_seconds=settings.ml_rate_limit_window_seconds,
+        detail="Too many requests. Please try again later.",
+    )
 
 
 async def rate_limit_enrollment_dependency(request: Request) -> None:
@@ -102,3 +146,16 @@ async def rate_limit_enrollment_dependency(request: Request) -> None:
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many requests. Please try again later.",
         )
+
+
+async def rate_limit_attendance_dependency(request: Request) -> None:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    await _enforce_device_scoped_limit(
+        request,
+        scope="attendance",
+        max_attempts=settings.attendance_rate_limit_max,
+        window_seconds=settings.attendance_rate_limit_window_seconds,
+        detail="Too many attendance requests. Please try again later.",
+    )

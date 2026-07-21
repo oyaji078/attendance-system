@@ -52,18 +52,39 @@ class Settings(BaseSettings):
     ml_rate_limit_window_seconds: int = 60
     enrollment_rate_limit_max: int = 20
     enrollment_rate_limit_window_seconds: int = 60
+    attendance_rate_limit_max: int = 40
+    attendance_rate_limit_window_seconds: int = 60
+    public_app_url: str | None = None
+    public_api_url: str | None = None
+    cors_allowed_origins: list[str] = Field(default_factory=list)
+    trusted_tunnel_origins: list[str] = Field(default_factory=list)
+    kiosk_public_mode: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:8000", "http://127.0.0.1:8000"])
     csrf_enabled: bool = True
     csrf_ttl_seconds: int = 3600
     max_frame_b64_length: int = 10_000_000
     max_frames_per_recognition: int = 10
 
-    @field_validator("cors_origins", mode="before")
+    @field_validator("cors_origins", "cors_allowed_origins", "trusted_tunnel_origins", mode="before")
     @classmethod
     def parse_cors_origins(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
         return value
+
+    @computed_field
+    @property
+    def effective_cors_origins(self) -> list[str]:
+        origins: list[str] = []
+        for value in [
+            *self.cors_origins,
+            *self.cors_allowed_origins,
+            *self.trusted_tunnel_origins,
+            self.public_app_url,
+        ]:
+            if value and value not in origins:
+                origins.append(value)
+        return origins
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -83,6 +104,8 @@ class Settings(BaseSettings):
     def validate_paths_and_sizes(self) -> "Settings":
         if self.default_detection_size_width <= 0 or self.default_detection_size_height <= 0:
             raise ValueError("default detection size must be positive")
+        if any(origin == "*" for origin in self.effective_cors_origins):
+            raise ValueError("Wildcard CORS origins are not allowed when credentialed admin cookies are enabled")
         Path(self.object_storage_root).mkdir(parents=True, exist_ok=True)
         key_ok, key_msg = is_secret_key_safe(self.auth_secret_key)
         if not key_ok:

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import base64
+import logging
 import time
 import uuid
 from dataclasses import dataclass
-from typing import ClassVar
 
 import cv2
 import numpy as np
@@ -53,6 +54,8 @@ DISPLAY_COLORS: dict[str, tuple[int, int, int]] = {
     "ungu": (160, 60, 200),
 }
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(slots=True)
 class ColorChallenge:
@@ -76,14 +79,44 @@ class ChallengeResult:
 
 
 def decode_frame_b64(frame_b64: str) -> np.ndarray:
-    raw = cv2.imdecode(np.frombuffer(__import__("base64").b64decode(frame_b64), dtype=np.uint8), cv2.IMREAD_COLOR)
+    raw = cv2.imdecode(np.frombuffer(base64.b64decode(frame_b64), dtype=np.uint8), cv2.IMREAD_COLOR)
     if raw is None:
         raise ValueError("invalid frame data")
     return raw
 
 
+def _challenge_to_dict(challenge: ColorChallenge) -> dict:
+    return {
+        "challenge_id": challenge.challenge_id,
+        "color_key": challenge.color_key,
+        "color_label": challenge.color_label,
+        "display_rgb": list(challenge.display_rgb),
+        "created_at": challenge.created_at,
+        "expires_at": challenge.expires_at,
+        "remaining_attempts": challenge.remaining_attempts,
+        "verified": challenge.verified,
+    }
+
+
+def _dict_to_challenge(data: dict) -> ColorChallenge:
+    display = data["display_rgb"]
+    if isinstance(display, list):
+        display = tuple(display)
+    return ColorChallenge(
+        challenge_id=data["challenge_id"],
+        color_key=data["color_key"],
+        color_label=data["color_label"],
+        display_rgb=display,
+        created_at=float(data["created_at"]),
+        expires_at=float(data["expires_at"]),
+        remaining_attempts=int(data.get("remaining_attempts", MAX_VERIFY_ATTEMPTS)),
+        verified=bool(data.get("verified", False)),
+    )
+
+
 class ColorChallengeService:
-    def __init__(self) -> None:
+    def __init__(self, cache: object | None = None) -> None:
+        self._cache = cache
         self._challenges: dict[str, ColorChallenge] = {}
 
     def _prune_expired(self) -> None:
@@ -92,8 +125,7 @@ class ColorChallengeService:
         for cid in expired:
             del self._challenges[cid]
 
-    def generate(self, device_code: str) -> ColorChallenge:
-        self._prune_expired()
+    async def generate(self, device_code: str) -> ColorChallenge:
         color_keys = list(COLOR_DEFINITIONS.keys())
         color_key = color_keys[uuid.uuid4().int % len(color_keys)]
         now = time.time()
@@ -105,10 +137,33 @@ class ColorChallengeService:
             created_at=now,
             expires_at=now + CHALLENGE_TTL_SECONDS,
         )
-        self._challenges[challenge.challenge_id] = challenge
+        if self._cache is not None:
+            try:
+                await self._cache.set_color_challenge(challenge.challenge_id, _challenge_to_dict(challenge), CHALLENGE_TTL_SECONDS)
+            except Exception:
+                logger.warning("Failed to store color challenge in Redis, falling back to in-memory: %s", challenge.challenge_id)
+                self._prune_expired()
+                self._challenges[challenge.challenge_id] = challenge
+        else:
+            self._prune_expired()
+            self._challenges[challenge.challenge_id] = challenge
         return challenge
 
-    def get(self, challenge_id: str) -> ColorChallenge | None:
+    async def get(self, challenge_id: str) -> ColorChallenge | None:
+        if self._cache is not None:
+            try:
+                data = await self._cache.get_color_challenge(challenge_id)
+                if data is None:
+                    return None
+                challenge = _dict_to_challenge(data)
+                if challenge.expires_at < time.time():
+                    await self._cache.delete_color_challenge(challenge_id)
+                    return None
+                if challenge.verified:
+                    return None
+                return challenge
+            except Exception:
+                logger.warning("Redis unavailable for color challenge lookup, falling back to in-memory: %s", challenge_id)
         self._prune_expired()
         challenge = self._challenges.get(challenge_id)
         if challenge is None:
@@ -120,13 +175,18 @@ class ColorChallengeService:
             return None
         return challenge
 
-    def verify(self, challenge_id: str, frame_b64: str, *, min_color_ratio: float = 0.04) -> ChallengeResult:
-        challenge = self.get(challenge_id)
+    async def verify(self, challenge_id: str, frame_b64: str, *, min_color_ratio: float = 0.04) -> ChallengeResult:
+        challenge = await self.get(challenge_id)
         if challenge is None:
             return ChallengeResult(passed=False, liveness_score=0.0, reason="challenge_expired_or_invalid", remaining_attempts=0, color_present_ratio=0.0)
         challenge.remaining_attempts -= 1
         if challenge.remaining_attempts <= 0:
-            del self._challenges[challenge_id]
+            if self._cache is not None:
+                try:
+                    await self._cache.delete_color_challenge(challenge_id)
+                except Exception:
+                    pass
+            self._challenges.pop(challenge_id, None)
         try:
             frame = decode_frame_b64(frame_b64)
         except ValueError:
@@ -150,7 +210,21 @@ class ColorChallengeService:
         passed = color_ratio >= min_color_ratio and liveness_score >= 0.35
         if passed:
             challenge.verified = True
-            del self._challenges[challenge_id]
+            if self._cache is not None:
+                try:
+                    await self._cache.delete_color_challenge(challenge_id)
+                except Exception:
+                    pass
+            else:
+                self._challenges.pop(challenge_id, None)
+        else:
+            if self._cache is not None and challenge.remaining_attempts > 0:
+                try:
+                    await self._cache.set_color_challenge(challenge_id, _challenge_to_dict(challenge), CHALLENGE_TTL_SECONDS)
+                except Exception:
+                    pass
+            elif challenge.remaining_attempts > 0:
+                self._challenges[challenge_id] = challenge
         return ChallengeResult(
             passed=passed,
             liveness_score=liveness_score,

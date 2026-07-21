@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models.entities import FaceTemplate
 from db.models.vector import normalize_embedding_for_db
-from db.repositories.match_queries import FACE_TEMPLATE_ANN_QUERY
+from db.repositories.match_queries import FACE_TEMPLATE_ANN_QUERY, FACE_TEMPLATE_CLASS_SCOPED_ANN_QUERY
 
 
 @dataclass(slots=True)
@@ -82,9 +82,34 @@ class FaceTemplateRepository:
         if limit < 1:
             raise ValueError("limit must be at least 1")
         normalized_embedding = normalize_embedding_for_db(query_embedding)
+        await self.session.execute(text("SET LOCAL hnsw.ef_search = 40"))
         result = await self.session.execute(
             text(FACE_TEMPLATE_ANN_QUERY),
             {"query_embedding": normalized_embedding, "k": limit},
+        )
+        return [
+            TemplateMatch(
+                template_id=row.template_id,
+                person_id=row.person_id,
+                student_id=row.student_id,
+                full_name=row.full_name,
+                email=row.email,
+                class_id=row.class_id,
+                class_code=row.class_code,
+                class_name=row.class_name,
+                distance=float(row.distance),
+            )
+            for row in result
+        ]
+
+    async def search_active_for_class(self, query_embedding: list[float], class_id: UUID, limit: int = 5) -> list[TemplateMatch]:
+        if limit < 1:
+            raise ValueError("limit must be at least 1")
+        normalized_embedding = normalize_embedding_for_db(query_embedding)
+        await self.session.execute(text("SET LOCAL hnsw.ef_search = 40"))
+        result = await self.session.execute(
+            text(FACE_TEMPLATE_CLASS_SCOPED_ANN_QUERY),
+            {"query_embedding": normalized_embedding, "class_id": class_id, "k": limit},
         )
         return [
             TemplateMatch(
@@ -106,7 +131,12 @@ class FaceTemplateRepository:
         return int(result.scalar_one())
 
     async def reindex_hnsw(self) -> None:
-        await self.session.execute(text("REINDEX INDEX face_templates_embedding_hnsw_idx"))
+        # REINDEX CONCURRENTLY refuses to run inside a transaction block, so it
+        # needs a dedicated autocommit connection instead of the request session.
+        engine = self.session.bind
+        async with engine.connect() as connection:
+            autocommit = await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await autocommit.execute(text("REINDEX INDEX CONCURRENTLY idx_face_templates_embedding_hnsw"))
 
     async def delete_for_person(self, person_id: UUID) -> int:
         result = await self.session.execute(delete(FaceTemplate).where(FaceTemplate.person_id == person_id))

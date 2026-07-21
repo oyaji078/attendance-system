@@ -68,6 +68,18 @@ button.secondary,
   color: var(--ink);
 }
 
+button.tertiary {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+button.tertiary:hover:not(:disabled) {
+  background: var(--surface-soft);
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .mode-button.is-active {
   background: var(--accent);
   color: white;
@@ -291,6 +303,43 @@ button.compact {
   gap: 6px;
   color: var(--muted);
   font-weight: 800;
+}
+
+.field-hint {
+  font-weight: 600;
+  font-size: 0.72rem;
+  color: var(--accent, #38bdf8);
+  opacity: 0.85;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.admin-form fieldset.admin-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+}
+
+.admin-form fieldset.admin-fieldset legend {
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: var(--muted);
+  padding: 0 4px;
+}
+
+.admin-form .day-checkboxes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.admin-form .day-checkboxes label.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 .form-error {
@@ -590,6 +639,51 @@ button.compact {
   font-weight: 800;
 }
 
+.session-detail-summary {
+  grid-template-columns: 1fr;
+}
+
+.session-today-logs {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.session-today-logs summary {
+  cursor: pointer;
+  font-weight: 900;
+  color: var(--accent);
+}
+
+.today-logs-table {
+  width: 100%;
+  margin-top: 10px;
+  font-size: 0.82rem;
+  border-collapse: collapse;
+}
+
+.today-logs-table th,
+.today-logs-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+}
+
+.today-logs-table th {
+  color: var(--muted);
+  font-weight: 900;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.face-thumb.mini {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+}
+
 .status-dot {
   display: inline-flex;
   width: 12px;
@@ -687,19 +781,21 @@ button.compact {
 
 .attendance-confirm-body {
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 1fr;
   gap: 16px;
   align-items: start;
 }
 
 .attendance-confirm-photo-wrap {
-  width: 132px;
-  aspect-ratio: 1;
+  width: 100%;
+  max-width: 280px;
+  margin: 0 auto;
+  aspect-ratio: 3/4;
   display: grid;
   place-items: center;
   overflow: hidden;
   border: 2px solid rgba(15, 118, 110, 0.24);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--surface-soft);
 }
 
@@ -770,23 +866,20 @@ button.compact {
   gap: 14px;
 }
 
-.enrollment-layout.recognition-active .capture-progress,
-.enrollment-layout.recognition-active .pose-instruction,
-.enrollment-layout.recognition-active .ui-hint,
-.enrollment-layout.recognition-active .manual-panel,
-.enrollment-layout.recognition-active .debug-panel {
+.enrollment-layout.recognition-active .pose-dots,
+.enrollment-layout.recognition-active .enroll-instruction,
+.enrollment-layout.recognition-active .enroll-bottom-sheet,
+.enrollment-layout.recognition-active .admin-panel-hidden {
   display: none;
 }
 
-.app-shell[data-screen="capture"] .pose-instruction,
-.app-shell[data-screen="capture"] .ui-hint,
-.app-shell[data-screen="capture"] .manual-panel,
-.app-shell[data-screen="capture"] .debug-panel,
-.app-shell[data-screen="recognize"] .pose-instruction,
-.app-shell[data-screen="recognize"] .ui-hint,
-.app-shell[data-screen="recognize"] .capture-progress,
-.app-shell[data-screen="recognize"] .manual-panel,
-.app-shell[data-screen="recognize"] .debug-panel {
+.app-shell[data-screen="capture"] .enroll-instruction,
+.app-shell[data-screen="capture"] .enroll-bottom-sheet,
+.app-shell[data-screen="capture"] .admin-panel-hidden,
+.app-shell[data-screen="recognize"] .enroll-instruction,
+.app-shell[data-screen="recognize"] .pose-dots,
+.app-shell[data-screen="recognize"] .enroll-bottom-sheet,
+.app-shell[data-screen="recognize"] .admin-panel-hidden {
   display: none;
 }
 
@@ -816,170 +909,199 @@ button.compact {
   font-weight: 800;
 }
 
-.progress-panel {
+/* ── Enrollment top bar ── */
+.enroll-top-bar {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 20px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.45) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.enroll-top-bar > * {
+  pointer-events: auto;
+}
+
+.enroll-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.5);
+  transition: background 200ms ease, box-shadow 200ms ease;
+}
+
+.enroll-status-dot.idle { background: rgba(255,255,255,0.5); }
+.enroll-status-dot.searching { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.5); }
+.enroll-status-dot.adjusting { background: #f59e0b; box-shadow: 0 0 8px rgba(245,158,11,0.5); }
+.enroll-status-dot.holding { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.5); animation: dot-pulse 1s ease-in-out infinite; }
+.enroll-status-dot.capturing { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.5); }
+.enroll-status-dot.accepted { background: #22c55e; box-shadow: 0 0 12px rgba(34,197,94,0.7); }
+.enroll-status-dot.complete { background: #22c55e; box-shadow: 0 0 12px rgba(34,197,94,0.7); }
+.enroll-status-dot.error { background: #ef4444; box-shadow: 0 0 8px rgba(239,68,68,0.5); }
+.enroll-status-dot.liveness_check { background: #a78bfa; box-shadow: 0 0 8px rgba(167,139,250,0.5); }
+
+@keyframes dot-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.3); }
+}
+
+.enroll-student-name {
+  flex: 1;
+  color: white;
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.enroll-cancel-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(17, 22, 30, 0.4);
+  color: white;
+  font-size: 1.5rem;
+  font-weight: 300;
+  cursor: pointer;
   display: grid;
-  gap: 12px;
+  place-items: center;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
 }
 
-.capture-progress {
-  padding: 12px;
-  border: 1px solid rgba(215, 221, 226, 0.72);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
+.enroll-cancel-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.85);
+  border-color: rgba(255, 255, 255, 0.4);
+  transform: translateY(-1px);
 }
 
-.app-shell[data-screen="capture"] .capture-progress {
+.enroll-cancel-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.enroll-cancel-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ── Enrollment instruction ── */
+.enroll-instruction {
   position: absolute;
   z-index: 6;
   left: 50%;
-  right: auto;
-  top: auto;
-  bottom: 20px;
-  width: min(620px, calc(100vw - 36px));
-  color: white;
-  border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(11, 15, 20, 0.58);
-  backdrop-filter: blur(14px);
-  box-shadow: none;
+  bottom: 18%;
   transform: translateX(-50%);
-}
-
-.app-shell[data-screen="capture"] .capture-progress button {
-  display: none;
-}
-
-.app-shell[data-screen="capture"] .pose-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.app-shell[data-screen="capture"] .pose-card {
-  min-height: 48px;
-  padding: 8px;
-  border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.1);
   color: white;
-}
-
-.app-shell[data-screen="capture"] .pose-card span {
-  color: rgba(255, 255, 255, 0.72);
-  font-size: 0.72rem;
-}
-
-.app-shell[data-screen="capture"] .pose-card strong {
-  font-size: 0.98rem;
-}
-
-.progress-copy {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 10px;
-  font-weight: 900;
-}
-
-#speed-label {
-  flex: 1;
-  color: inherit;
-  font-size: 0.82rem;
-  font-weight: 800;
-  opacity: 0.74;
+  font-size: clamp(1rem, 2.2vw, 1.35rem);
+  font-weight: 700;
   text-align: center;
+  text-shadow: 0 2px 12px rgba(0,0,0,0.6);
+  white-space: nowrap;
+  max-width: 90vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: opacity 200ms ease;
+  pointer-events: none;
 }
 
-.progress-bar {
+/* ── Pose dots ── */
+.pose-dots {
+  position: absolute;
+  z-index: 6;
+  left: 50%;
+  bottom: 10%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  pointer-events: none;
+}
+
+.pose-dot {
+  width: 12px;
   height: 12px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e4e9ed;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.4);
+  background: transparent;
+  transition: background 300ms ease, border-color 300ms ease, transform 300ms ease;
 }
 
-.progress-fill {
-  width: 0;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent) 0%, #16a34a 100%);
-  transition: width 280ms cubic-bezier(0.22, 1, 0.36, 1);
-  position: relative;
-  overflow: hidden;
+.pose-dot.active {
+  border-color: #f59e0b;
+  animation: dot-pulse 1.2s ease-in-out infinite;
 }
 
-.progress-fill::after {
-  content: "";
+.pose-dot.complete {
+  background: #22c55e;
+  border-color: #22c55e;
+  transform: scale(1.1);
+}
+
+/* ── Enrollment bottom sheet ── */
+.enroll-bottom-sheet {
   position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-  animation: shimmer 2s ease-in-out infinite;
+  z-index: 6;
+  left: 50%;
+  bottom: 4%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 20px;
+  border-radius: 16px;
+  background: rgba(11,15,20,0.55);
+  backdrop-filter: blur(12px);
+  color: white;
+  max-width: min(500px, 85vw);
+  text-align: center;
+  pointer-events: none;
+  transition: opacity 200ms ease;
 }
 
-@keyframes shimmer {
-  0% { translate: -100% 0; }
-  100% { translate: 100% 0; }
+.enroll-warning {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #fde68a;
 }
 
-.pose-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.pose-card {
-  min-height: 62px;
-  padding: 10px;
-  display: grid;
-  align-content: space-between;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #f8fafb;
-}
-
-.pose-card span {
-  color: var(--muted);
-  font-size: 0.84rem;
-  font-weight: 800;
-}
-
-.pose-card strong {
+.enroll-countdown {
   font-size: 1.1rem;
-}
-
-.pose-card.active {
-  border-color: rgba(183, 121, 31, 0.55);
-  background: var(--warn-soft);
-  box-shadow: 0 0 0 2px rgba(183, 121, 31, 0.2);
-  transition: border-color 200ms ease, background 200ms ease, box-shadow 200ms ease;
-}
-
-.pose-card.complete {
-  border-color: rgba(8, 116, 67, 0.35);
-  background: var(--success-soft);
-  position: relative;
-}
-
-.pose-card.complete::after {
-  content: "✓";
-  position: absolute;
-  top: 2px;
-  right: 6px;
-  font-size: 0.72rem;
-  color: var(--success);
-  font-weight: 900;
-}
-
-.pose-card.transitioning {
-  animation: pose-transition 400ms ease;
-}
-
-@keyframes pose-transition {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.06); }
-  100% { transform: scale(1); }
+  font-weight: 800;
+  color: #22c55e;
 }
 
 .debug-panel,
 .manual-panel,
-.device-panel {
+.device-panel,
+.admin-panel-hidden {
   padding: 12px;
+}
+
+.admin-panel-hidden {
+  position: absolute;
+  z-index: 20;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0,0,0,0.85);
+  color: rgba(255,255,255,0.7);
+  border-radius: 0;
+  backdrop-filter: blur(8px);
+}
+
+.admin-panel-hidden summary {
+  color: rgba(255,255,255,0.5);
+  font-size: 0.8rem;
 }
 
 .debug-stack {
@@ -1040,27 +1162,6 @@ dd {
   min-height: 100vh;
   display: grid;
   place-items: center;
-}
-
-.stage-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: start;
-  gap: 12px;
-}
-
-.app-shell[data-screen="capture"] .stage-header {
-  position: absolute;
-  z-index: 7;
-  left: 18px;
-  right: 18px;
-  top: 18px;
-  align-items: center;
-  padding: 14px 16px;
-  border-radius: 8px;
-  background: rgba(11, 15, 20, 0.58);
-  color: white;
-  backdrop-filter: blur(14px);
 }
 
 .app-shell[data-screen="recognize"] .stage-header {
@@ -1165,16 +1266,16 @@ video.is-mirrored {
 .face-oval {
   position: absolute;
   left: 50%;
-  top: 50%;
+  top: 45%;
   width: var(--oval-width, min(44vw, 320px));
   height: var(--oval-height, min(62vw, 430px));
   max-height: 78%;
   transform: translate(calc(-50% + var(--oval-x, 0px)), calc(-50% + var(--oval-y, 0px)));
-  border: 5px solid rgba(255, 255, 255, 0.72);
+  border: 4px solid rgba(255, 255, 255, 0.65);
   border-radius: 50%;
   box-shadow:
-    0 0 0 999px rgba(0, 0, 0, 0.2),
-    inset 0 0 34px rgba(0, 0, 0, 0.22);
+    0 0 0 999px rgba(0, 0, 0, 0.15),
+    inset 0 0 24px rgba(0, 0, 0, 0.15);
   transition: width 220ms ease, height 220ms ease, transform 220ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -1203,7 +1304,29 @@ video.is-mirrored {
   text-shadow: 0 2px 14px rgba(0, 0, 0, 0.56);
   transform: translate(-50%, -50%);
   opacity: 0;
-  transition: opacity 160ms ease;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+
+.oval-center strong {
+  font-size: clamp(1.1rem, 2.6vw, 1.8rem);
+  line-height: 1.05;
+}
+
+.oval-center span {
+  font-size: clamp(0.78rem, 1.5vw, 0.95rem);
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.camera-stage[data-flow-state="holding"] .oval-center,
+.camera-stage[data-flow-state="capturing"] .oval-center,
+.camera-stage[data-flow-state="pose_complete"] .oval-center {
+  opacity: 1;
+}
+
+.app-shell[data-screen="recognize"] .oval-center {
+  opacity: 1;
 }
 
 .oval-center strong {
@@ -1361,91 +1484,7 @@ video.is-mirrored {
   bottom: max(8%, calc(50% - 330px));
 }
 
-.instruction-banner {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  top: 18px;
-  min-height: 72px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding: 14px 16px;
-  border-radius: 8px;
-  background: rgba(11, 15, 20, 0.72);
-  color: white;
-  backdrop-filter: blur(10px);
-}
-
-.app-shell[data-screen="capture"] .instruction-banner {
-  z-index: 6;
-  top: max(7vh, calc(50% - 320px));
-  left: 50%;
-  right: auto;
-  width: min(620px, calc(100vw - 36px));
-  min-width: 0;
-  justify-content: center;
-  text-align: center;
-  background: rgba(11, 15, 20, 0.58);
-  backdrop-filter: blur(14px);
-  transform: translateX(-50%);
-}
-
-.app-shell[data-screen="recognize"] .instruction-banner {
-  display: none;
-}
-
-.instruction-banner p {
-  font-size: 2.4rem;
-  font-weight: 900;
-}
-
-#countdown-label {
-  min-width: 120px;
-  color: #fde68a;
-  font-weight: 900;
-  text-align: right;
-}
-
-.camera-stage[data-flow-state="holding"] #countdown-label {
-  animation: countdown-pulse 400ms ease-in-out infinite alternate;
-}
-
-@keyframes countdown-pulse {
-  0% { opacity: 0.7; transform: scale(0.95); }
-  100% { opacity: 1; transform: scale(1.05); }
-}
-
-.capture-overlay {
-  position: absolute;
-  left: 18px;
-  right: 18px;
-  bottom: 18px;
-  padding: 12px 14px;
-  border-radius: 8px;
-  background: rgba(11, 15, 20, 0.74);
-  color: white;
-  font-weight: 900;
-  text-align: center;
-}
-
-.app-shell[data-screen="capture"] .capture-overlay,
-.app-shell[data-screen="recognize"] .capture-overlay {
-  display: none;
-}
-
-.capture-overlay.validating {
-  background: rgba(183, 121, 31, 0.9);
-}
-
-.capture-overlay.accepted {
-  background: rgba(8, 116, 67, 0.9);
-}
-
-.capture-overlay.rejected {
-  background: rgba(180, 35, 24, 0.9);
-}
+/* instruction-banner and capture-overlay removed — merged into enroll-instruction */
 
 .challenge-overlay {
   position: absolute;
@@ -1598,14 +1637,11 @@ video.is-mirrored {
   50% { border-width: 6px; box-shadow: 0 0 0 999px rgba(8, 116, 67, 0.18), 0 0 48px rgba(34, 197, 94, 0.7); }
 }
 
+/* pose-instruction and ui-hint removed from enrollment — merged into enroll-instruction */
 .pose-instruction,
 .copy {
   color: var(--muted);
   line-height: 1.45;
-}
-
-.app-shell[data-screen="capture"] .pose-instruction {
-  color: rgba(255, 255, 255, 0.78);
 }
 
 .ui-hint {
@@ -1716,257 +1752,359 @@ video.is-mirrored {
   max-width: 760px;
 }
 
-.attendance-success-log {
-  display: grid;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-
-.attendance-success-list {
-  display: grid;
-  gap: 10px;
-}
-
-.attendance-success-empty {
-  color: var(--muted);
-  font-weight: 800;
-}
-
-.success-log-item {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 10px;
-  align-items: center;
-  padding: 10px;
-  border: 1px solid rgba(8, 116, 67, 0.22);
-  border-radius: 8px;
-  background: var(--success-soft);
-}
-
-.success-log-photo,
-.success-log-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 999px;
-}
-
-.success-log-photo {
-  object-fit: cover;
-}
-
-.success-log-avatar {
-  display: grid;
-  place-items: center;
-  color: var(--success);
-  background: #fff;
-  font-weight: 900;
-}
-
-.success-log-item div {
-  min-width: 0;
-  display: grid;
-  gap: 2px;
-}
-
-.success-log-item strong,
-.success-log-item span,
-.success-log-item small {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.success-log-item span,
-.success-log-item small {
-  color: #315c44;
-  font-size: 0.82rem;
-  font-weight: 800;
-}
-
-.recognition-card {
-  padding: 16px;
-  display: grid;
-  gap: 14px;
-}
-
+/* ── Attendance: camera-first layout ── */
 .app-shell[data-screen="recognize"] .recognition-panel {
   position: fixed;
-  z-index: 11;
-  left: auto;
-  right: 18px;
-  top: 82px;
-  bottom: 18px;
-  width: min(340px, calc(100vw - 36px));
-  max-width: 340px;
-  overflow: hidden;
+  inset: 0;
+  z-index: 1;
   pointer-events: none;
-  transform: none;
 }
 
-.app-shell[data-screen="recognize"] .attendance-success-log {
-  position: fixed;
-  z-index: 11;
-  left: 18px;
-  top: 82px;
-  bottom: 18px;
-  width: min(340px, calc(100vw - 390px));
-  max-width: 340px;
-  overflow: auto;
-  color: var(--ink);
-  box-shadow: none;
-}
-
+.app-shell[data-screen="recognize"] .attendance-success-log,
 .app-shell[data-screen="recognize"] .recognition-card {
-  max-height: 100%;
-  overflow: auto;
-  overscroll-behavior: contain;
-  pointer-events: auto;
-  color: white;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 8px;
-  background: rgba(11, 15, 20, 0.54);
-  box-shadow: none;
-  backdrop-filter: blur(10px);
-  gap: 12px;
-  padding: 12px;
-}
-
-.app-shell[data-screen="recognize"] .recognition-card .manual-panel {
   display: none;
 }
 
-.app-shell[data-screen="recognize"] .recognition-card .section-heading {
-  display: grid;
-  gap: 2px;
-}
-
-.app-shell[data-screen="recognize"] .recognition-card .section-heading h2 {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.15;
-}
-
-.app-shell[data-screen="recognize"] .recognition-card .copy {
-  color: rgba(255, 255, 255, 0.82);
-  margin: 0;
-  font-size: 0.88rem;
-  line-height: 1.35;
-}
-
-.session-picker {
-  display: grid;
-  gap: 6px;
-  color: inherit;
-  font-weight: 800;
-}
-
-.session-picker select {
-  min-height: 42px;
-  padding: 8px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 8px;
-  color: white;
-  background: rgba(11, 15, 20, 0.52);
-}
-
-.session-picker option {
-  color: #111827;
-}
-
+/* ── Public kiosk attendance: keep camera-first, hide admin chrome ── */
+.app-shell[data-screen="recognize"] .topbar .mode-switch,
+.app-shell[data-screen="recognize"] .topbar #logout-admin,
+.app-shell[data-screen="recognize"] .topbar .eyebrow,
+.app-shell[data-screen="recognize"] .topbar h1,
+.app-shell[data-screen="recognize"] #auto-status,
+.app-shell[data-screen="recognize"] .device-panel,
 .app-shell[data-screen="recognize"] .recognition-card .manual-panel,
-.app-shell[data-screen="recognize"] .recognition-card .debug-panel {
+.app-shell[data-screen="recognize"] .recognition-card .debug-panel,
+.app-shell[data-screen="recognize"] .admin-panel-hidden {
+  display: none !important;
+}
+
+/* ── Attendance top bar ── */
+.attendance-top-bar {
+  position: absolute;
+  z-index: 10;
+  left: 0;
+  right: 0;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  background: linear-gradient(180deg, rgba(0,0,0,0.45) 0%, transparent 100%);
+  pointer-events: auto;
+}
+
+.attendance-top-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.attendance-top-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.attendance-session-badge {
   color: white;
-  border-color: rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 60vw;
 }
 
-.app-shell[data-screen="recognize"] .recognition-card .debug-panel {
-  display: block;
-  padding: 8px 10px;
-  font-size: 0.78rem;
-}
-
-.app-shell[data-screen="recognize"] .recognition-card .debug-panel summary {
+.attendance-admin-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.7);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   cursor: pointer;
-  font-weight: 900;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  backdrop-filter: blur(4px);
+  flex-shrink: 0;
 }
 
-.app-shell[data-screen="recognize"] .recognition-card .debug-panel pre {
-  max-height: 180px;
-  overflow: auto;
-  margin: 8px 0 0;
-  color: rgba(255, 255, 255, 0.82);
-  font-size: 0.72rem;
-  line-height: 1.35;
+.attendance-admin-btn:hover {
+  background: rgba(255,255,255,0.18);
+  color: white;
+  border-color: rgba(255,255,255,0.35);
+}
+
+.attendance-close-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(239, 68, 68, 0.16);
+  color: #fecaca;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  flex-shrink: 0;
+}
+
+.attendance-close-btn::before {
+  content: "\00d7";
+  font-size: 1.15rem;
+  line-height: 1;
+  font-weight: 400;
+}
+
+.attendance-close-btn:hover {
+  background: rgba(239, 68, 68, 0.9);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.attendance-close-btn:active {
+  transform: translateY(0);
+}
+
+.attendance-change-session-btn {
+  min-height: 28px;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.25);
+  background: rgba(255,255,255,0.1);
+  color: rgba(255,255,255,0.85);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease, border-color 150ms ease;
+  backdrop-filter: blur(4px);
+}
+
+.attendance-change-session-btn:hover {
+  background: rgba(255,255,255,0.2);
+  color: white;
+  border-color: rgba(255,255,255,0.4);
+}
+
+/* ── Attendance toast (modern card) ── */
+.attendance-toast {
+  position: absolute;
+  z-index: 20;
+  left: 50%;
+  bottom: 12%;
+  transform: translateX(-50%) translateY(24px) scale(0.96);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 20px 14px 16px;
+  border-radius: 18px;
+  background: rgba(17, 22, 30, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+  color: #fff;
+  max-width: min(460px, 88vw);
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 260ms ease, transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, 0.42);
+  --toast-accent: #64748b;
+}
+
+.attendance-toast.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+/* Colored accent rail on the left edge, tinted per state. */
+.attendance-toast::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 12px;
+  bottom: 12px;
+  width: 4px;
+  border-radius: 4px;
+  background: var(--toast-accent);
+}
+
+.attendance-toast.success { --toast-accent: #22c55e; }
+.attendance-toast.warning { --toast-accent: #f59e0b; }
+.attendance-toast.error   { --toast-accent: #ef4444; }
+.attendance-toast.info    { --toast-accent: #38bdf8; }
+
+.attendance-toast-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  font-size: 1.25rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  color: var(--toast-accent);
+  background: color-mix(in srgb, var(--toast-accent) 22%, transparent);
+}
+
+.attendance-toast-text {
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.attendance-toast-text small {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 500;
+  opacity: 0.75;
+  margin-top: 2px;
+}
+
+/* ── Attendance edge-case sheet ── */
+.attendance-edge-sheet {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: end;
+  pointer-events: none;
+}
+
+.attendance-edge-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+
+.attendance-edge-content {
+  position: relative;
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto;
+  padding: 24px;
+  border-radius: 20px 20px 0 0;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 -8px 32px rgba(0,0,0,0.2);
+  pointer-events: auto;
+  display: grid;
+  gap: 12px;
+  transform: translateY(100%);
+  transition: transform 300ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.attendance-edge-sheet.visible .attendance-edge-content {
+  transform: translateY(0);
+}
+
+.attendance-edge-content h3 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.attendance-edge-content p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.attendance-edge-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 8px;
 }
 
 .attendance-result-card {
-  position: static;
-  width: 100%;
-  min-height: 0;
-  padding: 12px;
+  position: absolute;
+  z-index: 15;
+  left: 50%;
+  bottom: 22%;
+  transform: translateX(-50%) translateY(16px);
+  width: min(380px, 85vw);
+  padding: 14px 18px;
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 48px minmax(0, 1fr);
   align-items: center;
-  gap: 6px 10px;
+  gap: 6px 12px;
   text-align: left;
-  color: #14201a;
-  background: rgba(255, 255, 255, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.6);
-  border-radius: 8px;
-  box-shadow: none;
-  transform: none;
-  backdrop-filter: none;
+  color: white;
+  background: rgba(11,15,20,0.65);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease, transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.attendance-result-card.visible {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  pointer-events: auto;
 }
 
 .attendance-result-card.success {
-  border-color: rgba(34, 197, 94, 0.8);
+  border-color: rgba(34,197,94,0.6);
+  background: rgba(8,116,67,0.7);
 }
 
 .attendance-result-card.recognized,
 .attendance-result-card.cooldown {
-  border-color: rgba(15, 118, 110, 0.46);
+  border-color: rgba(15,118,110,0.5);
 }
 
 .attendance-result-card.guidance {
-  border-color: rgba(245, 158, 11, 0.7);
+  border-color: rgba(245,158,11,0.6);
 }
 
 .attendance-result-card.unknown,
 .attendance-result-card.ambiguous,
 .attendance-result-card.error {
-  border-color: rgba(180, 35, 24, 0.5);
+  border-color: rgba(180,35,24,0.5);
 }
 
 .attendance-photo-wrap {
-  grid-row: 1 / span 3;
-  width: 54px;
-  height: 54px;
+  grid-row: 1 / span 2;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
   overflow: hidden;
-  border-radius: 999px;
-  background: #e7ecef;
-  border: 2px solid rgba(15, 118, 110, 0.2);
+  border-radius: 50%;
+  background: rgba(255,255,255,0.12);
+  border: 2px solid rgba(255,255,255,0.2);
 }
 
 .attendance-result-card.success .attendance-photo-wrap {
-  border-color: rgba(34, 197, 94, 0.62);
+  border-color: rgba(34,197,94,0.7);
 }
 
 .attendance-result-card.guidance .attendance-photo-wrap {
-  border-color: rgba(245, 158, 11, 0.52);
+  border-color: rgba(245,158,11,0.6);
 }
 
 .attendance-result-card.ambiguous .attendance-photo-wrap,
 .attendance-result-card.unknown .attendance-photo-wrap,
 .attendance-result-card.error .attendance-photo-wrap {
-  border-color: rgba(180, 35, 24, 0.42);
+  border-color: rgba(180,35,24,0.5);
 }
 
 .attendance-photo-wrap img {
@@ -1980,10 +2118,10 @@ video.is-mirrored {
   height: 100%;
   display: grid;
   place-items: center;
-  color: var(--accent);
-  font-size: 1rem;
-  font-weight: 900;
-  background: var(--accent-soft);
+  color: white;
+  font-size: 0.9rem;
+  font-weight: 800;
+  background: rgba(255,255,255,0.15);
 }
 
 #attendance-card-title,
@@ -1995,23 +2133,21 @@ video.is-mirrored {
 
 .attendance-result-card h2 {
   max-width: 100%;
-  font-size: 1.08rem;
+  font-size: 1rem;
   line-height: 1.15;
   overflow-wrap: anywhere;
+  color: white;
 }
 
 .attendance-result-card > p {
   max-width: 100%;
   line-height: 1.35;
+  color: rgba(255,255,255,0.8);
 }
 
 .attendance-facts {
   grid-column: 1 / -1;
-  display: grid;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 800;
+  display: none;
 }
 
 #attendance-message {
@@ -2131,7 +2267,7 @@ video.is-mirrored {
 
 @media (max-width: 980px) {
   .topbar,
-  .stage-header {
+  .stage-actions {
     align-items: stretch;
     flex-direction: column;
   }
@@ -2144,7 +2280,19 @@ video.is-mirrored {
 
   .admin-sidebar {
     position: static;
-    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 8px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 6px;
+    scrollbar-width: thin;
+  }
+
+  .admin-nav {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    min-height: 44px;
   }
 
   .table-head {
@@ -2174,69 +2322,83 @@ video.is-mirrored {
     grid-template-columns: 1fr;
   }
 
-  .app-shell[data-screen="capture"] .stage-header {
-    align-items: center;
-    flex-direction: row;
-  }
-
-  .app-shell[data-screen="recognize"] .stage-header {
-    align-items: center;
-    flex-direction: row;
-    width: min(360px, calc(100vw - 332px));
-  }
-
-  .app-shell[data-screen="capture"] .instruction-banner {
-    left: 50%;
-    right: auto;
-    top: max(7vh, calc(50% - 300px));
-    width: min(560px, calc(100vw - 28px));
-    min-width: 0;
-    transform: translateX(-50%);
-  }
-
-  .app-shell[data-screen="capture"] .capture-progress {
-    left: 50%;
-    right: auto;
-    top: auto;
-    bottom: 70px;
-    width: min(560px, calc(100vw - 28px));
-    transform: translateX(-50%);
-  }
-
-  .app-shell[data-screen="capture"] .capture-overlay,
-  .app-shell[data-screen="recognize"] .capture-overlay {
-    left: 14px;
-    right: 14px;
-    bottom: 14px;
-    width: auto;
-    transform: none;
-  }
-
-  .app-shell[data-screen="recognize"] .recognition-panel {
-    left: auto;
-    right: 14px;
-    top: 76px;
-    bottom: 14px;
-    width: min(300px, 26vw);
-    transform: none;
-  }
-
-  .app-shell[data-screen="recognize"] .attendance-success-log {
-    left: 14px;
-    top: 76px;
-    bottom: 14px;
-    width: min(300px, 28vw);
-  }
-
   video,
   .video-frame {
     min-height: 56vh;
+  }
+
+  .enroll-instruction {
+    font-size: clamp(0.9rem, 3vw, 1.15rem);
+    bottom: 20%;
+  }
+
+  .pose-dots {
+    bottom: 12%;
+  }
+
+  .enroll-bottom-sheet {
+    bottom: 5%;
+    max-width: 90vw;
+  }
+
+  .attendance-toast {
+    bottom: 16%;
+    max-width: 90vw;
+    padding: 12px 18px;
+  }
+
+  .attendance-result-card {
+    bottom: 24%;
+    width: min(340px, 90vw);
+  }
+
+  .attendance-top-bar {
+    padding: 10px 14px;
+  }
+
+  .attendance-session-badge {
+    font-size: 0.78rem;
   }
 }
 
 @media (max-width: 640px) {
   .app-shell {
     padding: 10px;
+  }
+
+  /* Comfortable touch targets on phones (WCAG ~44px min). */
+  .mode-button,
+  .admin-nav,
+  button,
+  .home-action,
+  input,
+  select {
+    min-height: 44px;
+  }
+
+  .topbar {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .topbar h1 {
+    font-size: 1.1rem;
+  }
+
+  /* Admin table cards: full-width rows with clear label/value stacking. */
+  .admin-content-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .admin-content-head button {
+    width: 100%;
+  }
+
+  .identity-dialog,
+  .login-card {
+    width: min(94vw, 420px);
   }
 
   .app-shell[data-screen="capture"],
@@ -2284,77 +2446,9 @@ video.is-mirrored {
     grid-template-columns: 1fr;
   }
 
-  .pose-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .app-shell[data-screen="capture"] .pose-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .instruction-banner {
-    left: 10px;
-    right: 10px;
-    top: 10px;
-    min-height: 64px;
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .instruction-banner p {
-    font-size: 1.6rem;
-  }
-
-  #countdown-label {
-    min-width: 0;
-    text-align: left;
-  }
-
-  .capture-overlay {
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-  }
-
-  .app-shell[data-screen="capture"] .capture-overlay,
-  .app-shell[data-screen="recognize"] .capture-overlay {
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-  }
-
-  .app-shell[data-screen="capture"] .capture-progress {
-    left: 50%;
-    right: auto;
-    bottom: 64px;
-    width: calc(100vw - 20px);
-    transform: translateX(-50%);
-  }
-
   .face-oval {
     width: var(--oval-width, 64vw);
     height: var(--oval-height, 88vw);
-  }
-
-  .app-shell[data-screen="recognize"] .recognition-panel {
-    left: auto;
-    right: 10px;
-    top: 58px;
-    bottom: auto;
-    width: min(360px, calc(100vw - 20px));
-    max-height: clamp(74px, calc(50vh - 44vw - 60px), 128px);
-    transform: none;
-  }
-
-  .app-shell[data-screen="recognize"] .attendance-success-log {
-    left: 10px;
-    right: auto;
-    top: auto;
-    bottom: 10px;
-    width: min(360px, calc(100vw - 20px));
-    max-height: 34vh;
-    padding: 8px;
   }
 
   .attendance-confirm-body,
@@ -2366,39 +2460,11 @@ video.is-mirrored {
     width: 96px;
   }
 
-  .app-shell[data-screen="recognize"] .recognition-card {
-    gap: 6px;
-    overflow: hidden;
-    padding: 8px;
-  }
-
-  .app-shell[data-screen="recognize"] .recognition-card .section-heading {
-    display: none;
-  }
-
-  .app-shell[data-screen="recognize"] .recognition-card .copy {
-    max-height: 2.4em;
-    overflow: hidden;
-    font-size: 0.72rem;
-    line-height: 1.2;
-  }
-
-  .app-shell[data-screen="recognize"] .session-picker {
-    order: -1;
-    gap: 2px;
-    font-size: 0.72rem;
-  }
-
-  .app-shell[data-screen="recognize"] .session-picker select {
-    min-height: 32px;
-    padding: 4px 6px;
-    font-size: 0.72rem;
-  }
-
   .attendance-result-card {
     padding: 10px;
     grid-template-columns: 42px minmax(0, 1fr);
     gap: 4px 8px;
+    bottom: 26%;
   }
 
   .attendance-result-card h2 {
@@ -2412,5 +2478,52 @@ video.is-mirrored {
 
   .attendance-facts {
     display: none;
+  }
+
+  .attendance-toast {
+    bottom: 18%;
+    padding: 10px 16px;
+    gap: 8px;
+  }
+
+  .attendance-toast-icon {
+    font-size: 1.2rem;
+  }
+
+  .attendance-toast-text {
+    font-size: 0.9rem;
+  }
+
+  .attendance-edge-content {
+    padding: 18px;
+  }
+
+  .enroll-instruction {
+    font-size: 0.95rem;
+    bottom: 22%;
+  }
+
+  .pose-dots {
+    bottom: 14%;
+    gap: 10px;
+  }
+
+  .pose-dot {
+    width: 10px;
+    height: 10px;
+  }
+
+  .enroll-top-bar {
+    padding: 10px 14px;
+  }
+
+  .enroll-student-name {
+    font-size: 0.75rem;
+  }
+
+  .enroll-cancel-btn {
+    width: 32px;
+    height: 32px;
+    font-size: 1.2rem;
   }
 }

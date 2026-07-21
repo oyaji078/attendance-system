@@ -7,7 +7,8 @@ from pydantic import BaseModel, Field
 
 
 class LecturerWrite(BaseModel):
-    lecturer_code: str = Field(min_length=1, max_length=64)
+    # Optional: auto-generated server-side (DSN-NNNN) when left blank.
+    lecturer_code: str | None = Field(default=None, max_length=64)
     full_name: str = Field(min_length=1, max_length=255)
     email: str | None = Field(default=None, max_length=255)
     department: str | None = Field(default=None, max_length=255)
@@ -29,7 +30,8 @@ class LecturerListResponse(BaseModel):
 
 
 class ClassWrite(BaseModel):
-    class_code: str = Field(min_length=1, max_length=64)
+    # Optional: auto-generated server-side (KLS-NNNN) when left blank.
+    class_code: str | None = Field(default=None, max_length=64)
     class_name: str = Field(min_length=1, max_length=255)
     lecturer_id: UUID | None = None
     description: str | None = None

@@ -3,12 +3,14 @@ import { kioskConfig } from "./config.js";
 const API_BASE_URL = kioskConfig.apiBaseUrl;
 const DEVICE_CODE = kioskConfig.deviceCode;
 const VIDEO_PREVIEW_MIRRORED = Boolean(kioskConfig.previewMirrored);
-const ATTENDANCE_SESSION_STORAGE_KEY = "attendanceSessionCode";
+const ATTENDANCE_SESSION_STORAGE_KEY = "attendanceSessionId";
 const CAMERA_STORAGE_KEY = "attendanceSelectedCameraId";
 const CAMERA_SELECTION_MODE_KEY = "attendanceCameraSelectionMode";
 const AUTO_CAPTURE_INTERVAL_MS = 560;
 const AUTO_CAPTURE_TICK_MS = 100;
-const STABILITY_WINDOW_MS = 360;
+const ENROLLMENT_FRAME_MIN_INTERVAL_MS = 1200;
+const ENROLLMENT_RATE_LIMIT_BACKOFF_MS = 4000;
+const STABILITY_WINDOW_MS = 280;
 const AFTER_ACCEPT_DELAY_MS = 320;
 const MAX_CAPTURE_BACKOFF_MS = 1600;
 const ATTENDANCE_SCAN_INTERVAL_MS = 750;
@@ -17,6 +19,7 @@ const ATTENDANCE_MAX_BACKOFF_MS = 2200;
 const ATTENDANCE_RESULT_PAUSE_MS = 1400;
 const ATTENDANCE_SUCCESS_PAUSE_MS = 2600;
 const FRAME_CAPTURE_DELAY_MS = 90;
+const SESSION_NOT_READY_MESSAGE = "Sesi belum siap. Silakan login ulang.";
 const POSE_SEQUENCE = ["front", "left_20", "right_20", "up_or_down"];
 const POSE_COPY = {
   front: {
@@ -69,6 +72,7 @@ const STATUS_COPY = {
   session_inactive: "Sesi Tidak Aktif",
   no_matching_session: "Tidak Ada Sesi",
   multiple_matching_sessions: "Sesi Ganda",
+  not_in_selected_class: "Bukan Kelas Ini",
   cooldown: "Jeda",
   liveness_check: "Verifikasi",
 };
@@ -156,24 +160,11 @@ const elements = {
   status: document.getElementById("status"),
   result: document.getElementById("result"),
   recognitionResult: document.getElementById("recognition-result"),
-  overlay: document.getElementById("capture-overlay"),
   faceOval: document.getElementById("face-oval"),
   ovalProgress: document.getElementById("oval-progress"),
   ovalPrimary: document.getElementById("oval-primary"),
   ovalSecondary: document.getElementById("oval-secondary"),
   successBurst: document.getElementById("success-burst"),
-  liveInstruction: document.getElementById("live-instruction"),
-  countdownLabel: document.getElementById("countdown-label"),
-  progressLabel: document.getElementById("progress-label"),
-  progressFill: document.getElementById("progress-fill"),
-  speedLabel: document.getElementById("speed-label"),
-  currentStepLabel: document.getElementById("current-step-label"),
-  currentPoseTitle: document.getElementById("current-pose-title"),
-  currentPoseInstruction: document.getElementById("current-pose-instruction"),
-  uiHint: document.getElementById("ui-hint"),
-  poseGrid: document.getElementById("pose-grid"),
-  captureButton: document.getElementById("capture-pose"),
-  finishButton: document.getElementById("finish-enrollment"),
   cancelButton: document.getElementById("cancel-enrollment"),
   attendanceResultCard: document.getElementById("attendance-result-card"),
   attendancePhoto: document.getElementById("attendance-photo"),
@@ -197,6 +188,7 @@ const elements = {
   attendanceConfirmMessage: document.getElementById("attendance-confirm-message"),
   attendanceConfirmAccept: document.getElementById("attendance-confirm-accept"),
   attendanceConfirmRetry: document.getElementById("attendance-confirm-retry"),
+  attendanceConfirmCancel: document.getElementById("attendance-confirm-cancel"),
   confirmName: document.getElementById("confirm-name"),
   confirmStudentId: document.getElementById("confirm-student-id"),
   confirmEmail: document.getElementById("confirm-email"),
@@ -217,7 +209,6 @@ const elements = {
   challengeSwatch: document.getElementById("challenge-swatch"),
   challengeText: document.getElementById("challenge-text"),
   challengeCountdown: document.getElementById("challenge-countdown"),
-  captureStatusBadge: document.getElementById("capture-status-badge"),
   autoStatus: document.getElementById("auto-status"),
   recognitionButton: document.getElementById("capture-recognition"),
   enrollModeButton: document.getElementById("mode-enroll"),
@@ -240,12 +231,34 @@ const elements = {
     pose: document.getElementById("metric-pose"),
     liveness: document.getElementById("metric-liveness"),
   },
+  enrollTopBar: document.getElementById("enroll-top-bar"),
+  enrollStatusDot: document.getElementById("enroll-status-dot"),
+  enrollStudentName: document.getElementById("enroll-student-name"),
+  enrollInstruction: document.getElementById("enroll-instruction"),
+  poseDots: document.getElementById("pose-dots"),
+  enrollBottomSheet: document.getElementById("enroll-bottom-sheet"),
+  enrollWarning: document.getElementById("enroll-warning"),
+  enrollCountdown: document.getElementById("enroll-countdown"),
+  captureButton: document.getElementById("capture-pose"),
+  finishButton: document.getElementById("finish-enrollment"),
+  attendanceTopBar: document.getElementById("attendance-top-bar"),
+  attendanceSessionBadge: document.getElementById("attendance-session-badge"),
+  attendanceChangeSessionBtn: document.getElementById("attendance-change-session-btn"),
+  attendanceCloseBtn: document.getElementById("attendance-close-btn"),
+  attendanceToast: document.getElementById("attendance-toast"),
+  attendanceToastIcon: document.getElementById("attendance-toast-icon"),
+  attendanceToastText: document.getElementById("attendance-toast-text"),
+  attendanceEdgeSheet: document.getElementById("attendance-edge-sheet"),
+  attendanceEdgeTitle: document.getElementById("attendance-edge-title"),
+  attendanceEdgeMessage: document.getElementById("attendance-edge-message"),
+  attendanceEdgeActions: document.getElementById("attendance-edge-actions"),
 };
 
 const state = {
   mode: "enroll",
   screen: "home",
   cameraReady: false,
+  cameraRecovering: false,
   enrollmentState: "idle",
   enrollmentSessionId: null,
   personId: null,
@@ -259,8 +272,11 @@ const state = {
   uiHint: "Ikuti panduan di layar.",
   lastFrameResponse: null,
   lastRequestAt: 0,
+  lastEnrollmentFrameAt: 0,
+  enrollmentBackoffUntil: 0,
   dynamicCaptureDelay: AUTO_CAPTURE_INTERVAL_MS,
   requestInFlight: false,
+  enrollmentFrameInFlight: false,
   captureLoopId: null,
   transitionTimerId: null,
   stableSince: null,
@@ -282,11 +298,19 @@ const state = {
   attendanceSessionLookupDone: false,
   attendanceSessionNotice: "",
   attendanceSessionLoadError: "",
+  availableAttendanceClasses: [],
+  attendanceClassLookupInFlight: false,
+  attendanceClassLoadError: "",
+  attendanceClassesFailed404: false,
+  attendanceClassesLoadedAt: 0,
   availableAttendanceSessions: [],
+  selectedAttendanceSessionId: null,
+  selectedAttendanceClassId: null,
   pendingAttendance: null,
   attendanceConfirmInFlight: false,
   successfulAttendances: [],
   adminUser: null,
+  pendingModeAfterLogin: "recognize",
   adminView: "dashboard",
   adminData: {},
   adminEdit: null,
@@ -528,8 +552,9 @@ function setMode(mode) {
     openAdmin();
     return;
   }
-  if (mode === "enroll" && !state.adminUser) {
-    showLogin();
+  if (mode === "enroll" && !authSessionReady()) {
+    state.pendingModeAfterLogin = mode;
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: mode });
     return;
   }
   state.mode = mode;
@@ -567,20 +592,23 @@ function normalizeSessionCode(value) {
   return sessionCode.length > 0 ? sessionCode : null;
 }
 
-function rememberSessionCode(sessionCode) {
-  const normalized = normalizeSessionCode(sessionCode);
-  state.attendanceSessionCode = normalized;
-  if (!normalized) {
+function rememberSession(session) {
+  if (!session?.session_id) {
     return;
   }
+  state.selectedAttendanceSessionId = session.session_id;
+  state.selectedAttendanceClassId = session.class_id ?? null;
+  state.attendanceSessionCode = session.session_code ?? null;
   try {
-    window.localStorage.setItem(ATTENDANCE_SESSION_STORAGE_KEY, normalized);
+    window.localStorage.setItem(ATTENDANCE_SESSION_STORAGE_KEY, session.session_id);
   } catch (error) {
-    console.debug("Unable to persist attendance session code", error);
+    console.debug("Unable to persist attendance session id", error);
   }
 }
 
 function forgetSessionCode({ notice = "" } = {}) {
+  state.selectedAttendanceSessionId = null;
+  state.selectedAttendanceClassId = null;
   state.attendanceSessionCode = null;
   if (notice) {
     state.attendanceSessionNotice = notice;
@@ -588,7 +616,7 @@ function forgetSessionCode({ notice = "" } = {}) {
   try {
     window.localStorage.removeItem(ATTENDANCE_SESSION_STORAGE_KEY);
   } catch (error) {
-    console.debug("Unable to clear attendance session code", error);
+    console.debug("Unable to clear attendance session id", error);
   }
 }
 
@@ -604,16 +632,40 @@ function sessionIsCurrentlyUsable(session) {
   if (!session?.is_active) {
     return false;
   }
-  const now = Date.now();
+  if (session.repeat_days && session.repeat_days.length > 0 && session.start_time) {
+    const witaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    const dayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    const todayWita = dayNames[witaNow.getUTCDay()];
+    if (!session.repeat_days.includes(todayWita)) {
+      return false;
+    }
+    const nowMinutes = witaNow.getUTCHours() * 60 + witaNow.getUTCMinutes();
+    const startMinutes = parseTimeToMinutes(session.start_time);
+    const endMinutes = parseTimeToMinutes(session.end_time);
+    if (startMinutes !== null && nowMinutes < startMinutes) {
+      return false;
+    }
+    if (endMinutes !== null && nowMinutes > endMinutes) {
+      return false;
+    }
+    return true;
+  }
   const startsAt = sessionTimestamp(session.starts_at);
   const endsAt = sessionTimestamp(session.ends_at);
-  if (startsAt !== null && startsAt > now) {
+  if (startsAt !== null && startsAt > Date.now()) {
     return false;
   }
-  if (endsAt !== null && endsAt < now) {
+  if (endsAt !== null && endsAt < Date.now()) {
     return false;
   }
   return true;
+}
+
+function parseTimeToMinutes(value) {
+  if (!value) return null;
+  const match = String(value).match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return null;
+  return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
 }
 
 function attendanceSessionItems(response) {
@@ -627,11 +679,10 @@ function attendanceSessionItems(response) {
 }
 
 function selectedAttendanceSession() {
-  const sessionCode = normalizeSessionCode(state.attendanceSessionCode);
-  if (!sessionCode) {
+  if (!state.selectedAttendanceSessionId) {
     return null;
   }
-  return state.availableAttendanceSessions.find((session) => session.session_code === sessionCode && sessionIsCurrentlyUsable(session)) ?? null;
+  return state.availableAttendanceSessions.find((session) => session.session_id === state.selectedAttendanceSessionId && sessionIsCurrentlyUsable(session)) ?? null;
 }
 
 function selectedAttendanceSessionCode() {
@@ -670,6 +721,78 @@ function resetAttendanceSessionLookup() {
   attendanceSessionLookupPromise = null;
 }
 
+async function loadAttendanceClasses() {
+  if (state.attendanceClassLookupInFlight) return;
+  if (state.attendanceClassesFailed404) return;
+  if (state.attendanceClassesLoadedAt > 0 && Date.now() - state.attendanceClassesLoadedAt < 30000) return;
+  state.attendanceClassLookupInFlight = true;
+  state.attendanceClassLoadError = "";
+  try {
+    const classes = await getJson("/attendance/classes/active");
+    state.availableAttendanceClasses = Array.isArray(classes) ? classes : [];
+    state.attendanceClassesLoadedAt = Date.now();
+    state.attendanceClassesFailed404 = false;
+    // Skip the "Pilih Kelas" step when there is exactly one active class —
+    // the operator shouldn't have to pick from a list of one.
+    if (
+      !state.selectedAttendanceClassId &&
+      !state.selectedAttendanceSessionId &&
+      state.availableAttendanceClasses.length === 1
+    ) {
+      const onlyClass = state.availableAttendanceClasses[0];
+      if (onlyClass?.class_id) {
+        state.selectedAttendanceClassId = onlyClass.class_id;
+        state.attendanceSessionLookupDone = false;
+        await loadSessionsForClass(onlyClass.class_id);
+      }
+    }
+  } catch (error) {
+    console.warn("Tidak dapat memuat kelas absensi aktif", error);
+    state.availableAttendanceClasses = [];
+    if (error?.status === 404) {
+      state.attendanceClassLoadError = "Endpoint kelas absensi belum tersedia.";
+      state.attendanceClassesFailed404 = true;
+    } else {
+      state.attendanceClassLoadError = "Kelas absensi tidak dapat dimuat.";
+    }
+  } finally {
+    state.attendanceClassLookupInFlight = false;
+    if (state.mode === "recognize") {
+      renderAttendance();
+    }
+  }
+}
+
+async function loadSessionsForClass(classId) {
+  state.attendanceSessionLookupInFlight = true;
+  state.attendanceSessionLoadError = "";
+  try {
+    const sessions = await getJson(`/attendance/classes/${classId}/sessions/active`);
+    const usableSessions = attendanceSessionItems(sessions).filter(sessionIsCurrentlyUsable);
+    state.availableAttendanceSessions = usableSessions;
+    // Auto-select when the chosen class has exactly one usable session, so
+    // scanning starts immediately instead of forcing a second manual pick.
+    if (!state.selectedAttendanceSessionId && usableSessions.length === 1) {
+      rememberSession(usableSessions[0]);
+      if (state.selectedAttendanceSessionId && state.mode === "recognize") {
+        state.attendanceStatus = "scanning";
+        state.attendanceLastResponse = null;
+        startAttendanceLoop();
+      }
+    }
+  } catch (error) {
+    console.warn("Tidak dapat memuat sesi untuk kelas", error);
+    state.availableAttendanceSessions = [];
+    state.attendanceSessionLoadError = "Sesi absensi tidak dapat dimuat.";
+  } finally {
+    state.attendanceSessionLookupInFlight = false;
+    state.attendanceSessionLookupDone = true;
+    if (state.mode === "recognize") {
+      renderAttendance();
+    }
+  }
+}
+
 async function refreshAttendanceSessionCode({ force = false, staleMessage = "Sesi lama sudah tidak aktif. Silakan pilih sesi baru." } = {}) {
   if (attendanceSessionLookupPromise) {
     return attendanceSessionLookupPromise;
@@ -684,24 +807,31 @@ async function refreshAttendanceSessionCode({ force = false, staleMessage = "Ses
     try {
       const response = await getJson("/attendance/sessions/active");
       const usableSessions = attendanceSessionItems(response).filter(sessionIsCurrentlyUsable);
-      const storedSessionCode = normalizeSessionCode(state.attendanceSessionCode);
+      const storedSessionId = (() => {
+        try {
+          return window.localStorage.getItem(ATTENDANCE_SESSION_STORAGE_KEY) || null;
+        } catch {
+          return null;
+        }
+      })();
       state.availableAttendanceSessions = usableSessions;
 
-      if (storedSessionCode) {
-        const stillActive = usableSessions.some((item) => item.session_code === storedSessionCode);
+      if (storedSessionId) {
+        const stillActive = usableSessions.some((item) => item.session_id === storedSessionId);
         if (!stillActive) {
           forgetSessionCode({ notice: staleMessage });
+        } else {
+          const restored = usableSessions.find((item) => item.session_id === storedSessionId);
+          if (restored) {
+            rememberSession(restored);
+          }
         }
-      }
-
-      if (!state.attendanceSessionCode && usableSessions.length === 1) {
-        rememberSessionCode(usableSessions[0].session_code);
       }
     } catch (error) {
       console.warn("Tidak dapat memuat sesi absensi aktif", error);
       state.availableAttendanceSessions = [];
       state.attendanceSessionLoadError = "Sesi absensi tidak dapat dimuat.";
-      if (!state.attendanceSessionLookupDone && state.attendanceSessionCode) {
+      if (!state.attendanceSessionLookupDone && state.selectedAttendanceSessionId) {
         forgetSessionCode();
       }
     } finally {
@@ -788,33 +918,31 @@ function isTerminalEnrollmentState() {
 
 let previousActivePose = null;
 
-function renderPoseGrid() {
+function renderPoseDots() {
   const nextActive = currentPose();
   const poseChanged = nextActive !== previousActivePose && previousActivePose !== null;
-  elements.poseGrid.innerHTML = "";
+  if (!elements.poseDots) return;
+  elements.poseDots.innerHTML = "";
   for (const pose of state.requiredPoses) {
     const progress = poseProgress(pose);
     const active = pose === nextActive && !progress.complete;
-    const transitioning = poseChanged && (pose === nextActive || pose === previousActivePose);
-    const card = document.createElement("article");
-    card.className = `pose-card${active ? " active" : ""}${progress.complete ? " complete" : ""}${transitioning ? " transitioning" : ""}`;
-    card.innerHTML = `
-      <span>${poseTitle(pose)}</span>
-      <strong>${progress.accepted}/${state.acceptedPerPose || 0}</strong>
-    `;
-    elements.poseGrid.appendChild(card);
+    const dot = document.createElement("span");
+    dot.className = `pose-dot${active ? " active" : ""}${progress.complete ? " complete" : ""}`;
+    dot.setAttribute("aria-label", `${poseTitle(pose)}: ${progress.complete ? "selesai" : active ? "aktif" : "menunggu"}`);
+    elements.poseDots.appendChild(dot);
   }
   previousActivePose = nextActive;
 }
 
 function setOverlay(text, tone = "idle") {
-  elements.overlay.textContent = text;
-  elements.overlay.className = `capture-overlay ${tone}`;
+  // Overlay removed from enrollment — instruction shown via enroll-instruction
+  // Kept for backward compatibility with attendance mode
 }
 
 function setStatusBadge(status) {
-  elements.captureStatusBadge.textContent = STATUS_COPY[status] ?? status;
-  elements.captureStatusBadge.className = `status-pill ${status}`;
+  if (elements.enrollStatusDot) {
+    elements.enrollStatusDot.className = `enroll-status-dot ${status}`;
+  }
   if (state.mode === "recognize") {
     elements.autoStatus.textContent = STATUS_COPY[state.attendanceStatus] ?? "Mode Absensi";
     elements.autoStatus.className = `status-pill ${state.attendanceStatus}`;
@@ -823,6 +951,22 @@ function setStatusBadge(status) {
   elements.autoStatus.textContent =
     !state.enrollmentSessionId && state.cameraReady ? "Kamera siap" : (STATUS_COPY[state.enrollmentState] ?? state.enrollmentState);
   elements.autoStatus.className = `status-pill ${state.enrollmentState}`;
+}
+
+function updateCountdown(msRemaining = null) {
+  if (msRemaining === null || msRemaining <= 0) {
+    if (elements.enrollCountdown) elements.enrollCountdown.textContent = "";
+    elements.faceOval.style.setProperty("--hold-progress", "0");
+    elements.faceOval.style.setProperty("--hold-angle", "0deg");
+    return;
+  }
+  const progress = clamp(1 - msRemaining / STABILITY_WINDOW_MS, 0, 1);
+  elements.faceOval.style.setProperty("--hold-progress", progress.toFixed(3));
+  elements.faceOval.style.setProperty("--hold-angle", `${Math.round(progress * 360)}deg`);
+  const step = Math.max(1, Math.ceil(msRemaining / (STABILITY_WINDOW_MS / 3)));
+  if (elements.enrollCountdown) {
+    elements.enrollCountdown.textContent = `Tahan... ${step}`;
+  }
 }
 
 function updateMetrics(quality = null) {
@@ -1150,20 +1294,6 @@ function guidanceFromResponse(response) {
   return { instruction: localizedHint(response) || poseInstruction(pose), arrow: null, secondary: "Ikuti panduan" };
 }
 
-function updateCountdown(msRemaining = null) {
-  if (msRemaining === null || msRemaining <= 0) {
-    elements.countdownLabel.textContent = "";
-    elements.faceOval.style.setProperty("--hold-progress", "0");
-    elements.faceOval.style.setProperty("--hold-angle", "0deg");
-    return;
-  }
-  const progress = clamp(1 - msRemaining / STABILITY_WINDOW_MS, 0, 1);
-  elements.faceOval.style.setProperty("--hold-progress", progress.toFixed(3));
-  elements.faceOval.style.setProperty("--hold-angle", `${Math.round(progress * 360)}deg`);
-  const step = Math.max(1, Math.ceil(msRemaining / (STABILITY_WINDOW_MS / 3)));
-  elements.countdownLabel.textContent = `Tahan... ${step}`;
-}
-
 function renderGuideGeometry(response) {
   const quality = response?.quality;
   if (!quality || !quality.face_width_px) {
@@ -1233,6 +1363,9 @@ async function requestLivenessChallenge() {
     state.livenessChallengeTimerId = window.setInterval(updateLivenessChallengeCountdown, 200);
     window.setTimeout(() => attemptLivenessCapture(), 1200);
   } catch (error) {
+    if (authFailureError(error)) {
+      return;
+    }
     console.warn("Liveness challenge request failed", error);
     state.livenessChallengeId = null;
     state.livenessChallengeActive = false;
@@ -1271,6 +1404,9 @@ async function attemptLivenessCapture() {
       window.setTimeout(() => attemptLivenessCapture(), 800);
     }
   } catch (error) {
+    if (authFailureError(error)) {
+      return;
+    }
     console.warn("Liveness capture failed", error);
     if (state.livenessChallengeAttempts < 3) {
       window.setTimeout(() => requestLivenessChallenge(), 1000);
@@ -1283,10 +1419,8 @@ async function attemptLivenessCapture() {
 function finishLivenessChallenge(passed, result = null) {
   hideLivenessChallenge();
   if (passed && result) {
-    setOverlay("Keaslian terverifikasi", "accepted");
     state.uiHint = "Wajah asli terverifikasi.";
   } else {
-    setOverlay("Verifikasi gagal, coba lagi", "rejected");
     state.uiHint = "Tunjukkan benda berwarna yang diminta.";
   }
   if (state.enrollmentSessionId && !allPosesComplete()) {
@@ -1336,6 +1470,7 @@ function attendancePayload(frames) {
   return {
     device_code: DEVICE_CODE,
     frames: payloadFrames,
+    session_id: state.selectedAttendanceSessionId ?? null,
   };
 }
 
@@ -1523,6 +1658,110 @@ function setAttendanceResultTone(tone) {
   }
 }
 
+const TOAST_ICONS = {
+  success: "&#10003;",
+  warning: "&#9888;",
+  error: "&#10060;",
+  info: "&#8505;",
+};
+
+// Short WebAudio cue so someone walking past a gate kiosk gets feedback
+// without reading the screen. Lazily created after the first user gesture so
+// browsers don't block the AudioContext.
+let sharedAudioContext = null;
+
+function playFeedbackTone(kind) {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    if (!sharedAudioContext) sharedAudioContext = new AudioCtx();
+    const ctx = sharedAudioContext;
+    if (ctx.state === "suspended") ctx.resume().catch(() => {});
+    // success: rising two-tone; warning: single mid; error: low buzz.
+    const sequence = kind === "success" ? [660, 990] : kind === "error" ? [220] : [440];
+    const now = ctx.currentTime;
+    sequence.forEach((freq, index) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = kind === "error" ? "sawtooth" : "sine";
+      osc.frequency.value = freq;
+      const start = now + index * 0.12;
+      const stop = start + 0.11;
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.exponentialRampToValueAtTime(0.2, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, stop);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(start);
+      osc.stop(stop + 0.02);
+    });
+  } catch {
+    // Audio is a non-critical enhancement; ignore failures.
+  }
+}
+
+let attendanceToastTimer = null;
+
+function hideAttendanceToast() {
+  if (attendanceToastTimer) {
+    clearTimeout(attendanceToastTimer);
+    attendanceToastTimer = null;
+  }
+  if (elements.attendanceToast) {
+    elements.attendanceToast.classList.remove("visible");
+  }
+}
+
+function showAttendanceToast(type, message, timeoutMs = 2200) {
+  hideAttendanceToast();
+  if (!elements.attendanceToast || !elements.attendanceToastIcon || !elements.attendanceToastText) return;
+  playFeedbackTone(type);
+  elements.attendanceToast.className = `attendance-toast ${type}`;
+  elements.attendanceToastIcon.innerHTML = TOAST_ICONS[type] ?? TOAST_ICONS.info;
+  elements.attendanceToastText.textContent = message;
+  requestAnimationFrame(() => {
+    elements.attendanceToast.classList.add("visible");
+  });
+  attendanceToastTimer = setTimeout(hideAttendanceToast, timeoutMs);
+}
+
+let attendanceEdgeSheetHandler = null;
+
+function hideAttendanceEdgeSheet() {
+  if (elements.attendanceEdgeSheet) {
+    elements.attendanceEdgeSheet.classList.remove("visible");
+    setTimeout(() => {
+      elements.attendanceEdgeSheet.classList.add("is-hidden");
+    }, 320);
+  }
+  attendanceEdgeSheetHandler = null;
+}
+
+function showAttendanceEdgeSheet({ title, message, actions }) {
+  if (!elements.attendanceEdgeSheet || !elements.attendanceEdgeTitle || !elements.attendanceEdgeMessage || !elements.attendanceEdgeActions) return;
+  hideAttendanceEdgeSheet();
+  elements.attendanceEdgeTitle.textContent = title;
+  elements.attendanceEdgeMessage.textContent = message;
+  elements.attendanceEdgeActions.innerHTML = "";
+  if (actions && actions.length > 0) {
+    actions.forEach((action) => {
+      const btn = document.createElement("button");
+      btn.className = `edge-btn ${action.variant || "primary"}`;
+      btn.textContent = action.label;
+      btn.addEventListener("click", () => {
+        hideAttendanceEdgeSheet();
+        if (action.handler) action.handler();
+      });
+      elements.attendanceEdgeActions.appendChild(btn);
+    });
+  }
+  requestAnimationFrame(() => {
+    elements.attendanceEdgeSheet.classList.remove("is-hidden");
+    requestAnimationFrame(() => {
+      elements.attendanceEdgeSheet.classList.add("visible");
+    });
+  });
+}
+
 function renderAttendanceResultCard() {
   const response = state.attendanceLastResponse;
   const cardStatus = state.attendanceRequestInFlight ? "recognizing" : state.attendanceStatus;
@@ -1542,6 +1781,7 @@ function renderAttendanceResultCard() {
       "error",
     ].includes(cardStatus);
   elements.attendanceResultCard.classList.toggle("is-hidden", !showCard);
+  elements.attendanceResultCard.classList.toggle("visible", showCard);
   if (!showCard) {
     return;
   }
@@ -1553,7 +1793,7 @@ function renderAttendanceResultCard() {
     recognizing: "Mengenali wajah",
     scanning: "Arahkan wajah ke oval",
     no_session: "Pengenalan wajah saja",
-    quality_rejected: "Frame belum layak",
+    quality_rejected: "Sesuaikan posisi",
     accepted: "Absensi berhasil",
     recognized: "Konfirmasi absensi",
     confirming: "Mencatat absensi",
@@ -1581,14 +1821,14 @@ function renderAttendanceResultCard() {
   const tone = tones[cardStatus] ?? null;
 
   setAttendanceResultTone(tone);
-  elements.attendanceCardTitle.textContent = title;
+  elements.attendanceCardTitle.textContent = "";
   elements.attendanceName.textContent = known ? person.full_name : title;
-  elements.attendanceStudent.textContent = known ? `${person.student_id}${person.class_code ? ` - ${person.class_code}` : ""}` : "-";
-  elements.attendanceConfidence.textContent = `Kecocokan: ${formatConfidence(response?.confidence)}`;
-  elements.attendanceDate.textContent = `Tanggal: ${currentDateText()}`;
-  elements.attendanceTime.textContent = `Waktu: ${currentTimeText()}`;
+  elements.attendanceStudent.textContent = known ? `${person.student_id}${person.class_code ? ` - ${person.class_code}` : ""}` : "";
+  elements.attendanceConfidence.textContent = "";
+  elements.attendanceDate.textContent = "";
+  elements.attendanceTime.textContent = "";
   const resolvedSession = response?.resolved_session ?? state.pendingAttendance?.response?.resolved_session ?? null;
-  elements.attendanceSession.textContent = resolvedSession ? `Sesi: ${resolvedSessionLabel(resolvedSession, { includeCode: true })}` : "Sesi: otomatis";
+  elements.attendanceSession.textContent = "";
   elements.attendanceMessage.textContent = message;
 
   const backendCrop = response?.captured_face_b64 ? `data:image/jpeg;base64,${response.captured_face_b64}` : null;
@@ -1616,64 +1856,135 @@ function renderAttendance() {
   const recognizing = state.attendanceRequestInFlight || state.attendanceStatus === "recognizing" || state.attendanceConfirmInFlight;
   const ambiguous = response?.reason === "candidate_margin_too_small" || state.attendanceStatus === "ambiguous";
   const qualityRejected = state.attendanceStatus === "quality_rejected" || isQualityRejection(response);
+  const noSession = !state.selectedAttendanceSessionId;
   let instruction = "Posisikan wajah di dalam oval";
-  if (recognizing) instruction = state.attendanceConfirmInFlight ? "Mencatat absensi..." : "Mengenali wajah...";
+  if (noSession) instruction = "Pilih sesi absensi untuk mulai";
+  else if (recognizing) instruction = state.attendanceConfirmInFlight ? "Mencatat absensi..." : "Mengenali wajah...";
   else if (qualityRejected) instruction = qualityGuidanceMessage(response);
-  else if (ambiguous) instruction = "Data wajah terlalu mirip. Coba ulangi posisi wajah.";
+  else if (ambiguous) instruction = "Data wajah terlalu mirip";
   else if (state.attendanceStatus === "accepted") instruction = "Absensi berhasil";
   else if (state.attendanceStatus === "recognized") instruction = "Konfirmasi absensi";
   else if (state.attendanceStatus === "no_matching_session") instruction = "Tidak ada sesi sesuai";
   else if (state.attendanceStatus === "multiple_matching_sessions") instruction = "Sesi ganda";
+  else if (state.attendanceStatus === "not_in_selected_class") instruction = "Wajah tidak terdaftar pada kelas ini";
   else if (state.attendanceStatus === "unknown") instruction = attendanceMessageFromResponse(response);
-  else if (state.attendanceStatus === "cooldown") instruction = "Tunggu sebentar...";
-  else if (state.attendanceStatus === "session_inactive") instruction = "Sesi absensi sudah tidak aktif";
+  else if (state.attendanceStatus === "cooldown") instruction = "Tunggu sebentar";
+  else if (state.attendanceStatus === "session_inactive") instruction = "Sesi tidak aktif";
   else if (state.attendanceStatus === "error") instruction = state.uiHint;
 
-  let secondary = "Sesi dipilih otomatis";
+  let secondary = "";
   if (recognizing) secondary = "Tahan sebentar...";
   else if (qualityRejected) secondary = qualitySecondaryMessage(response);
-  else if (scanning) secondary = "Mencari wajah...";
-  else if (response?.resolved_session) secondary = resolvedSessionLabel(response.resolved_session, { includeCode: true });
+  else if (scanning && !noSession) secondary = "Mencari wajah...";
+  else if (noSession) secondary = "";
+  else if (response?.resolved_session) secondary = resolvedSessionLabel(response.resolved_session, { includeCode: false });
   const tone =
     state.attendanceStatus === "accepted" || state.attendanceStatus === "recognized"
       ? "success"
       : qualityRejected
         ? qualityTone(response)
-      : recognizing || scanning || state.attendanceStatus === "cooldown"
+      : recognizing || scanning || state.attendanceStatus === "cooldown" || noSession
         ? "warning"
         : "danger";
 
   elements.cameraStage.dataset.guideTone = tone;
   elements.cameraStage.dataset.flowState = recognizing ? "capturing" : scanning ? "holding" : state.attendanceStatus;
-  elements.currentStepLabel.textContent = "Mode Absensi";
-  elements.currentPoseTitle.textContent = instruction;
-  elements.currentPoseInstruction.textContent = "Pemindaian wajah berjalan otomatis.";
-  elements.liveInstruction.textContent = instruction;
-  elements.ovalPrimary.textContent = recognizing ? "Mengenali..." : scanning ? "Posisikan wajah" : instruction;
+  elements.ovalPrimary.textContent = recognizing ? "Mengenali..." : scanning ? "" : instruction;
   elements.ovalSecondary.textContent = secondary;
-  elements.progressLabel.textContent = "Auto";
-  elements.progressFill.style.width = recognizing ? "62%" : "0%";
-  elements.speedLabel.textContent = "Absensi otomatis";
+
+  // Top bar with session info
+  if (elements.attendanceTopBar && elements.attendanceSessionBadge) {
+    const session = selectedAttendanceSession();
+    if (session) {
+      elements.attendanceSessionBadge.textContent = attendanceSessionLabel(session, { includeClass: false });
+      elements.attendanceTopBar.classList.remove("is-hidden");
+    } else if (state.selectedAttendanceClassId) {
+      const cls = state.availableAttendanceClasses.find((c) => c.class_id === state.selectedAttendanceClassId);
+      elements.attendanceSessionBadge.textContent = cls ? `${cls.class_code} - ${cls.class_name}` : "Memuat sesi...";
+      elements.attendanceTopBar.classList.remove("is-hidden");
+    } else if (state.attendanceStatus === "session_inactive" || state.attendanceStatus === "no_matching_session" || noSession) {
+      elements.attendanceSessionBadge.textContent = noSession ? "Pilih Kelas" : "Tidak ada sesi aktif";
+      elements.attendanceTopBar.classList.remove("is-hidden");
+    } else {
+      elements.attendanceTopBar.classList.add("is-hidden");
+    }
+  }
+
   renderAttendanceSessionPicker();
-  elements.uiHint.textContent = instruction;
-  elements.uiHint.className = `ui-hint ${tone}`;
+  if (elements.attendanceChangeSessionBtn) {
+    elements.attendanceChangeSessionBtn.classList.toggle("is-hidden", noSession);
+  }
   elements.cancelButton.disabled = false;
   elements.captureButton.disabled = true;
   elements.finishButton.disabled = true;
-  elements.result.textContent = "diagnostik pendaftaran tersembunyi";
+  elements.result.textContent = "diagnostik tersembunyi";
   clearArrows();
   renderGuideGeometry(null);
-  renderPoseGrid();
-  setStatusBadge(recognizing ? "recognizing" : state.attendanceStatus);
-  setOverlay(instruction, tone === "success" ? "accepted" : tone === "warning" ? "validating" : "rejected");
+  renderPoseDots();
+  setStatusBadge(noSession ? "no_session" : (recognizing ? "recognizing" : state.attendanceStatus));
   renderAttendanceResultCard();
-  renderSuccessfulAttendanceLog();
 }
 
 function renderAttendanceSessionPicker() {
-  elements.attendanceSessionCopy.textContent = "Sesi absensi dipilih otomatis berdasarkan wajah, kelas, dan waktu saat ini.";
-  elements.attendanceSessionPicker.classList.add("is-hidden");
-  elements.attendanceSessionSelect.innerHTML = "";
+  if (!elements.attendanceSessionPicker) return;
+  const session = selectedAttendanceSession();
+  if (session) {
+    elements.attendanceSessionPicker.classList.add("is-hidden");
+    elements.attendanceSessionSelect.innerHTML = "";
+    return;
+  }
+  if (state.attendanceClassLookupInFlight) {
+    elements.attendanceSessionCopy.textContent = "Memuat kelas...";
+    elements.attendanceSessionPicker.classList.add("is-hidden");
+    return;
+  }
+  if (state.attendanceClassLoadError) {
+    elements.attendanceSessionCopy.textContent = state.attendanceClassLoadError;
+    elements.attendanceSessionPicker.classList.add("is-hidden");
+    if (state.attendanceClassesFailed404) {
+      elements.attendanceSessionCopy.textContent = "Endpoint kelas absensi belum tersedia. Pastikan server berjalan.";
+    }
+    return;
+  }
+  const classes = state.availableAttendanceClasses;
+  if (!classes || classes.length === 0) {
+    elements.attendanceSessionCopy.textContent = "Tidak ada kelas aktif.";
+    elements.attendanceSessionPicker.classList.add("is-hidden");
+    return;
+  }
+  if (!state.selectedAttendanceClassId) {
+    elements.attendanceSessionCopy.textContent = "Pilih Kelas";
+    elements.attendanceSessionPicker.classList.remove("is-hidden");
+    elements.attendanceSessionSelect.innerHTML = `<option value="">-- Pilih Kelas --</option>${classes
+      .map((c) => `<option value="${escapeHtml(c.class_id)}">${escapeHtml(c.class_code)} - ${escapeHtml(c.class_name)}</option>`)
+      .join("")}`;
+    return;
+  }
+  const sessions = state.availableAttendanceSessions;
+  if (state.attendanceSessionLookupInFlight) {
+    elements.attendanceSessionCopy.textContent = "Memuat sesi...";
+    elements.attendanceSessionPicker.classList.add("is-hidden");
+    return;
+  }
+  if (state.attendanceSessionLoadError) {
+    elements.attendanceSessionCopy.textContent = state.attendanceSessionLoadError;
+    elements.attendanceSessionPicker.classList.add("is-hidden");
+    return;
+  }
+  if (!sessions || sessions.length === 0) {
+    elements.attendanceSessionCopy.textContent = "Tidak ada sesi aktif untuk kelas ini.";
+    elements.attendanceSessionPicker.classList.remove("is-hidden");
+    elements.attendanceSessionSelect.innerHTML = `<option value="">-- Tidak Ada Sesi --</option>`;
+    return;
+  }
+  elements.attendanceSessionCopy.textContent = "Pilih Sesi";
+  elements.attendanceSessionPicker.classList.remove("is-hidden");
+  elements.attendanceSessionSelect.innerHTML = `<option value="">-- Pilih Sesi --</option>${sessions
+    .map((s) => {
+      const label = attendanceSessionLabel(s, { includeClass: false });
+      return `<option value="${escapeHtml(s.session_id)}">${escapeHtml(label)}</option>`;
+    })
+    .join("")}`;
 }
 
 function attendancePreviewPhoto(response) {
@@ -1696,17 +2007,11 @@ function showAttendanceConfirmModal(response) {
   elements.attendanceConfirmStatus.textContent = canConfirm ? "Dikenali" : "Perlu Ulang";
   elements.attendanceConfirmStatus.className = `status-pill ${canConfirm ? "recognized" : "unknown"}`;
   elements.confirmName.textContent = person.full_name ?? "-";
-  elements.confirmStudentId.textContent = person.student_id ?? "-";
-  elements.confirmEmail.textContent = person.email ?? "-";
   elements.confirmClass.textContent = person.class_name ?? person.class_code ?? "-";
-  elements.confirmLecturer.textContent = session?.lecturer_name ?? "-";
-  elements.confirmSession.textContent = session?.session_name ?? "-";
-  elements.confirmSessionCode.textContent = session?.session_code ?? "-";
-  const dateSource = resolvedSessionStart(session) ?? new Date();
-  const endSource = resolvedSessionEnd(session);
-  elements.confirmDate.textContent = formatDateOnly(dateSource);
-  elements.confirmTime.textContent = endSource ? `${formatTimeOnly(dateSource)} - ${formatTimeOnly(endSource)}` : formatTimeOnly(dateSource);
-  elements.confirmConfidence.textContent = formatConfidence(response?.confidence);
+  elements.confirmSession.textContent = session?.session_name ?? session?.session_code ?? "-";
+  const nowWita = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  const timeStr = nowWita.toISOString().substring(11, 16) + " WITA";
+  elements.confirmTime.textContent = timeStr;
   elements.attendanceConfirmPhoto.classList.toggle("is-hidden", !photo);
   elements.attendanceConfirmAvatar.classList.toggle("is-hidden", Boolean(photo));
   if (photo) {
@@ -1805,6 +2110,61 @@ function formatTimeOnly(value) {
   return new Intl.DateTimeFormat("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
 }
 
+function formatRepeatDays(days) {
+  if (!days || days.length === 0) return "-";
+  const labels = { monday: "Sen", tuesday: "Sel", wednesday: "Rab", thursday: "Kam", friday: "Jum", saturday: "Sab", sunday: "Min" };
+  return days.map((d) => labels[d] || d).join(", ");
+}
+
+function formatSessionTimeRange(startTime, endTime) {
+  if (!startTime && !endTime) return "-";
+  const s = startTime ? String(startTime).substring(0, 5) : "-";
+  const e = endTime ? String(endTime).substring(0, 5) : "-";
+  return `${s}–${e}`;
+}
+
+async function loadSessionTodayLogs(sessionId) {
+  const container = document.getElementById("session-today-logs-container");
+  if (!container || !sessionId) return;
+  container.innerHTML = `<p class="muted">Memuat log...</p>`;
+  try {
+    const logs = await getJson(`/attendance/sessions/${sessionId}/today-logs?timezone=Asia/Makassar`);
+    if (!logs || logs.length === 0) {
+      container.innerHTML = `<p class="muted">Belum ada absensi hari ini.</p>`;
+      return;
+    }
+    const rows = logs.map((log) => {
+      const photo = log.captured_image_url
+        ? `<img class="face-thumb mini" src="${API_BASE_URL}${log.captured_image_url}" alt="" />`
+        : `<span class="avatar-mini">?</span>`;
+      return `<tr>
+        <td>${photo}</td>
+        <td>${escapeHtml(log.full_name ?? log.student_id ?? "-")}</td>
+        <td>${escapeHtml(log.class_code ?? "-")}</td>
+        <td>${formatWitaDateTime(log.created_at)}</td>
+        <td>${attendanceDecisionLabel(log.decision, log.reason)}</td>
+      </tr>`;
+    }).join("");
+    container.innerHTML = `<table class="admin-table today-logs-table"><thead><tr>
+      <th style="width:52px">Foto</th><th>Nama</th><th>Kelas</th><th>Waktu Absen (WITA)</th><th>Status</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+  } catch (error) {
+    container.innerHTML = `<p class="muted danger">Gagal memuat log.</p>`;
+  }
+}
+
+function formatWitaDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  const wita = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const dd = String(wita.getUTCDate()).padStart(2, "0");
+  const mm = String(wita.getUTCMonth() + 1).padStart(2, "0");
+  const yy = wita.getUTCFullYear();
+  const hh = String(wita.getUTCHours()).padStart(2, "0");
+  const min = String(wita.getUTCMinutes()).padStart(2, "0");
+  return `${dd}/${mm}/${yy} ${hh}.${min} WITA`;
+}
+
 function suggestedSessionCode() {
   const now = new Date();
   const yy = String(now.getFullYear()).slice(-2);
@@ -1835,14 +2195,85 @@ function getCookie(name) {
   return "";
 }
 
-function csrfHeaders(method) {
-  const unsafe = ["POST", "PUT", "PATCH", "DELETE"].includes(String(method).toUpperCase());
-  if (!unsafe) return {};
-  const token = getCookie("csrf_token");
-  if (!token) {
-    console.warn("Missing csrf_token cookie before unsafe request; user may need to login again.");
-    return {};
+function isUnsafeMethod(method) {
+  return ["POST", "PUT", "PATCH", "DELETE"].includes(String(method).toUpperCase());
+}
+
+function csrfToken() {
+  return getCookie("csrf_token");
+}
+
+function authSessionReady() {
+  return Boolean(state.adminUser) && Boolean(csrfToken());
+}
+
+const PUBLIC_ATTENDANCE_PATHS = new Set([
+  "/attendance/sessions/active",
+  "/attendance/preview",
+  "/attendance/confirm",
+  "/attendance/checkin",
+  "/attendance/status",
+]);
+
+function isPublicAttendancePath(path) {
+  const normalized = path.split("?")[0];
+  return PUBLIC_ATTENDANCE_PATHS.has(normalized) || normalized.startsWith("/attendance/sessions/") || normalized.startsWith("/attendance/logs/");
+}
+
+function requestNeedsReadySession(method, path) {
+  if (!isUnsafeMethod(method)) return false;
+  if (path === "/auth/login") return false;
+  if (isPublicAttendancePath(path)) return false;
+  return true;
+}
+
+function intendedModeAfterAuth() {
+  return ["recognize", "enroll"].includes(state.mode) ? state.mode : "recognize";
+}
+
+function handleAuthRequired(message = SESSION_NOT_READY_MESSAGE, { intendedMode = intendedModeAfterAuth() } = {}) {
+  stopAutoCaptureLoop();
+  stopAttendanceLoop();
+  state.adminUser = null;
+  state.pendingModeAfterLogin = ["recognize", "enroll", "admin"].includes(intendedMode) ? intendedMode : "recognize";
+  state.attendanceStatus = "idle";
+  state.captureStatus = state.enrollmentSessionId ? "idle" : state.captureStatus;
+  state.uiHint = message;
+  state.enrollmentFrameInFlight = false;
+  state.requestInFlight = false;
+  updateAuthUi();
+  showLogin(message);
+}
+
+function ensureUnsafeRequestAllowed(method, path) {
+  if (!requestNeedsReadySession(method, path) || authSessionReady()) {
+    return;
   }
+  handleAuthRequired(SESSION_NOT_READY_MESSAGE);
+  throw new ApiError(SESSION_NOT_READY_MESSAGE, { status: state.adminUser ? 403 : 401, url: `${API_BASE_URL}${path}` });
+}
+
+function shouldStopForAuthFailure(path, status) {
+  if (isPublicAttendancePath(path)) return false;
+  return path !== "/auth/login" && (status === 401 || status === 403);
+}
+
+function retryAfterMs(response) {
+  const value = response.headers?.get?.("Retry-After");
+  if (!value) {
+    return null;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+  const retryAt = Date.parse(value);
+  return Number.isFinite(retryAt) ? Math.max(0, retryAt - Date.now()) : null;
+}
+
+function csrfHeaders(method) {
+  if (!isUnsafeMethod(method)) return {};
+  const token = csrfToken();
   return { "x-csrf-token": token };
 }
 
@@ -1897,22 +2328,28 @@ function updateAuthUi() {
   elements.adminModeButton.textContent = loggedIn ? "Panel Admin" : "Login Admin";
 }
 
-function showLogin() {
+function showLogin(message = "") {
   stopAutoCaptureLoop();
   stopAttendanceLoop();
   state.mode = "login";
   elements.enrollModeButton.classList.remove("is-active");
   elements.recognizeModeButton.classList.remove("is-active");
   elements.adminModeButton.classList.add("is-active");
-  elements.loginError.classList.add("is-hidden");
+  if (message) {
+    elements.loginError.textContent = message;
+    elements.loginError.classList.remove("is-hidden");
+  } else {
+    elements.loginError.classList.add("is-hidden");
+  }
   setScreen("login");
 }
 
 async function openAdmin() {
   stopAutoCaptureLoop();
   stopAttendanceLoop();
-  if (!state.adminUser) {
-    showLogin();
+  if (!authSessionReady()) {
+    state.pendingModeAfterLogin = "admin";
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "admin" });
     return;
   }
   state.mode = "admin";
@@ -1924,14 +2361,29 @@ async function openAdmin() {
   renderAdmin();
 }
 
-async function refreshMe() {
+async function refreshMe({ showLoginOnFailure = false, intendedMode = "recognize" } = {}) {
   try {
-    const response = await getJson("/auth/me");
+    const response = await getJson("/auth/me", { suppressErrorLog: true });
     state.adminUser = response.user;
-  } catch {
+    if (!csrfToken()) {
+      // CSRF cookie missing: treat as not-logged-in. Only force the login
+      // screen if the caller asked for it. Public kiosk boot does not.
+      state.adminUser = null;
+      if (showLoginOnFailure) {
+        handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode });
+      }
+      updateAuthUi();
+      return false;
+    }
+  } catch (error) {
     state.adminUser = null;
+    if (showLoginOnFailure) {
+      handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode });
+      return false;
+    }
   }
   updateAuthUi();
+  return Boolean(state.adminUser);
 }
 
 async function loadAdminData() {
@@ -2014,6 +2466,9 @@ function renderAdmin() {
     devices: renderDevices,
   };
   elements.adminBody.innerHTML = `${(renderers[state.adminView] ?? renderAdminDashboard)()}${renderAdminDrawer()}`;
+  if (state.adminEdit?.type === "session") {
+    loadSessionTodayLogs(state.adminEdit.item?.session_id);
+  }
 }
 
 function renderAdminDashboard() {
@@ -2097,7 +2552,10 @@ function renderLecturers() {
 }
 
 function lecturerForm(item = {}) {
-  return `<form class="admin-form" data-form="lecturer"><input type="hidden" name="lecturer_id" value="${item.lecturer_id ?? ""}" /><label>Kode Dosen<input name="lecturer_code" value="${item.lecturer_code ?? ""}" required /></label><label>Nama<input name="full_name" value="${item.full_name ?? ""}" required /></label><label>Email<input name="email" value="${item.email ?? ""}" /></label><label>Departemen<input name="department" value="${item.department ?? ""}" /></label><button type="submit">${item.lecturer_id ? "Simpan" : "Tambah Dosen"}</button>${item.lecturer_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
+  const codeField = item.lecturer_id
+    ? `<label>Kode Dosen<input name="lecturer_code" value="${escapeHtml(item.lecturer_code ?? "")}" /></label>`
+    : `<label>Kode Dosen <span class="field-hint">otomatis jika kosong</span><input name="lecturer_code" placeholder="DSN-0001 (otomatis)" /></label>`;
+  return `<form class="admin-form" data-form="lecturer"><input type="hidden" name="lecturer_id" value="${item.lecturer_id ?? ""}" />${codeField}<label>Nama<input name="full_name" value="${escapeHtml(item.full_name ?? "")}" required /></label><label>Email<input name="email" value="${escapeHtml(item.email ?? "")}" /></label><label>Departemen<input name="department" value="${escapeHtml(item.department ?? "")}" /></label><button type="submit">${item.lecturer_id ? "Simpan" : "Tambah Dosen"}</button>${item.lecturer_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
 }
 
 function roleLabel(role) {
@@ -2154,7 +2612,10 @@ function renderClasses() {
 }
 
 function classForm(item = {}) {
-  return `<form class="admin-form" data-form="class"><input type="hidden" name="class_id" value="${item.class_id ?? ""}" /><label>Kode Kelas<input name="class_code" value="${item.class_code ?? ""}" required /></label><label>Nama Kelas<input name="class_name" value="${item.class_name ?? ""}" required /></label><label>Dosen<select name="lecturer_id">${adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id)}</select></label><label>Deskripsi<input name="description" value="${item.description ?? ""}" /></label><button type="submit">${item.class_id ? "Simpan" : "Tambah Kelas"}</button>${item.class_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
+  const codeField = item.class_id
+    ? `<label>Kode Kelas<input name="class_code" value="${escapeHtml(item.class_code ?? "")}" /></label>`
+    : `<label>Kode Kelas <span class="field-hint">otomatis jika kosong</span><input name="class_code" placeholder="KLS-0001 (otomatis)" /></label>`;
+  return `<form class="admin-form" data-form="class"><input type="hidden" name="class_id" value="${item.class_id ?? ""}" />${codeField}<label>Nama Kelas<input name="class_name" value="${escapeHtml(item.class_name ?? "")}" required /></label><label>Dosen<select name="lecturer_id">${adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id)}</select></label><label>Deskripsi<input name="description" value="${escapeHtml(item.description ?? "")}" /></label><button type="submit">${item.class_id ? "Simpan" : "Tambah Kelas"}</button>${item.class_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
 }
 
 function renderEnrollmentAdmin() {
@@ -2200,8 +2661,8 @@ function renderSessions() {
       { label: "Kelas", width: "minmax(96px, 0.8fr)", render: (item) => item.class_name ?? item.class_code ?? "-" },
       { label: "Dosen", width: "minmax(120px, 1fr)", render: (item) => item.lecturer_name ?? "-" },
       { label: "Status", width: "120px", render: sessionStatus },
-      { label: "Mulai", width: "minmax(120px, 0.9fr)", render: (item) => `${formatDateOnly(item.starts_at)} ${formatTimeOnly(item.starts_at)}` },
-      { label: "Selesai", width: "minmax(120px, 0.9fr)", render: (item) => `${formatDateOnly(item.ends_at)} ${formatTimeOnly(item.ends_at)}` },
+      { label: "Hari", width: "minmax(140px, 1fr)", render: (item) => formatRepeatDays(item.repeat_days) },
+      { label: "Jam", width: "minmax(100px, 0.8fr)", render: (item) => formatSessionTimeRange(item.start_time, item.end_time) },
     ],
     (item) =>
       `<button class="action-btn" data-action="copy-session-code" data-code="${escapeHtml(item.session_code)}" type="button">Salin Kode</button><button class="action-btn" data-action="edit-session" data-id="${item.session_id}" type="button">Detail</button>${
@@ -2228,7 +2689,15 @@ function sessionForm(item = {}) {
   ]
     .map(([value, label]) => `<option value="${value}" ${selectedKind === value ? "selected" : ""}>${label}</option>`)
     .join("");
-  return `<form class="admin-form" data-form="session"><input type="hidden" name="session_id" value="${item.session_id ?? ""}" />${codeField}<label>Nama Sesi<input name="session_name" value="${escapeHtml(item.session_name ?? "")}" placeholder="Absensi Pagi" required /></label><label>Jenis<select name="session_kind">${kindOptions}</select></label><label>Kelas<select name="class_id">${adminSelectOptions(state.adminData.classes, "class_id", "class_code", item.class_id)}</select></label><label>Dosen<select name="lecturer_id">${adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id)}</select></label><label>Device<input name="device_code" value="${escapeHtml(item.device_code ?? DEVICE_CODE)}" /></label><label>Mulai<input name="starts_at" type="datetime-local" value="${datetimeLocalValue(item.starts_at)}" /></label><label>Selesai<input name="ends_at" type="datetime-local" value="${datetimeLocalValue(item.ends_at)}" /></label><button type="submit">${item.session_id ? "Simpan" : "Tambah Sesi"}</button>${item.session_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  const dayLabels = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
+  const repeatDays = Array.isArray(item.repeat_days) ? item.repeat_days : [];
+  const dayCheckboxes = days
+    .map((day, i) => `<label class="checkbox-label"><input type="checkbox" name="repeat_days" value="${day}" ${repeatDays.includes(day) ? "checked" : ""} /> ${dayLabels[i]}</label>`)
+    .join("");
+  const startTimeVal = item.start_time ? String(item.start_time).substring(0, 5) : "";
+  const endTimeVal = item.end_time ? String(item.end_time).substring(0, 5) : "";
+  return `<form class="admin-form" data-form="session"><input type="hidden" name="session_id" value="${item.session_id ?? ""}" />${codeField}<label>Nama Sesi<input name="session_name" value="${escapeHtml(item.session_name ?? "")}" placeholder="Absensi Pagi" required /></label><label>Jenis<select name="session_kind">${kindOptions}</select></label><label>Kelas<select name="class_id">${adminSelectOptions(state.adminData.classes, "class_id", "class_code", item.class_id)}</select></label><label>Dosen<select name="lecturer_id">${adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id)}</select></label><label>Device<input name="device_code" value="${escapeHtml(item.device_code ?? DEVICE_CODE)}" /></label><fieldset class="admin-fieldset"><legend>Hari Aktif</legend><div class="day-checkboxes">${dayCheckboxes}</div></fieldset><label>Jam Mulai<input name="start_time" type="time" value="${startTimeVal}" /></label><label>Jam Selesai<input name="end_time" type="time" value="${endTimeVal}" /></label><button type="submit">${item.session_id ? "Simpan" : "Tambah Sesi"}</button>${item.session_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
 }
 
 function sessionFilterForm() {
@@ -2326,6 +2795,7 @@ function renderAdminDrawer() {
       <button class="secondary compact" data-action="cancel-edit" type="button">Batal</button>
     </div>
     ${type === "student" ? studentDetailSummary(item) : ""}
+    ${type === "session" ? sessionDetailSummary(item) : ""}
     ${forms[type] ?? ""}
   </aside>`;
 }
@@ -2340,6 +2810,23 @@ function studentDetailSummary(item = {}) {
       <div><dt>Dibuat</dt><dd>${formatDateOnly(item.created_at)}</dd></div>
       <div><dt>Diperbarui</dt><dd>${formatDateOnly(item.updated_at)}</dd></div>
     </dl>
+  </section>`;
+}
+
+function sessionDetailSummary(item = {}) {
+  return `<section class="detail-summary session-detail-summary">
+    <dl>
+      <div><dt>Kode</dt><dd>${escapeHtml(item.session_code ?? "-")}</dd></div>
+      <div><dt>Status</dt><dd>${activeStatus(item)}</dd></div>
+      <div><dt>Kelas</dt><dd>${escapeHtml(item.class_name ?? item.class_code ?? "-")}</dd></div>
+      <div><dt>Dosen</dt><dd>${escapeHtml(item.lecturer_name ?? "-")}</dd></div>
+      <div><dt>Hari</dt><dd>${formatRepeatDays(item.repeat_days)}</dd></div>
+      <div><dt>Jam</dt><dd>${formatSessionTimeRange(item.start_time, item.end_time)}</dd></div>
+    </dl>
+    <details class="session-today-logs">
+      <summary>Absensi Hari Ini</summary>
+      <div id="session-today-logs-container" data-session-id="${item.session_id ?? ""}"></div>
+    </details>
   </section>`;
 }
 
@@ -2409,6 +2896,7 @@ async function handleAdminForm(event) {
       else await apiJson("POST", "/admin/classes", payload);
     }
     if (form.dataset.form === "session") {
+      const repeatDaysChecked = Array.from(form.querySelectorAll('input[name="repeat_days"]:checked')).map((cb) => cb.value);
       const payload = {
         session_name: data.session_name,
         session_kind: data.session_kind || "lecture",
@@ -2416,8 +2904,10 @@ async function handleAdminForm(event) {
         lecturer_id: nullable(data.lecturer_id),
         device_code: nullable(data.device_code),
         cooldown_seconds: 30,
-        starts_at: nullable(data.starts_at) ? new Date(data.starts_at).toISOString() : null,
-        ends_at: nullable(data.ends_at) ? new Date(data.ends_at).toISOString() : null,
+        repeat_days: repeatDaysChecked.length > 0 ? repeatDaysChecked : null,
+        start_time: nullable(data.start_time) || null,
+        end_time: nullable(data.end_time) || null,
+        timezone: "Asia/Makassar",
         is_active: true,
       };
       if (nullable(data.session_code)) {
@@ -2590,39 +3080,65 @@ function renderWizard() {
   const holding = Boolean(state.stableSince && !state.requestInFlight && !allPosesComplete());
   const stuckAdjust = resp?.capture_status === "stuck_adjust";
   const primaryInstruction = holding ? "Tahan..." : (stuckAdjust ? (resp?.ui_hint || "Arah wajah belum sesuai.") : guidance.instruction);
-  const acceptedText = resp?.accepted ? "Berhasil" : "";
-  const ovalSecondary = holding ? `Merekam ${progress.accepted + 1}/${state.acceptedPerPose || 1}` : acceptedText || (stuckAdjust ? `${resp.rejected_count_for_pose || 0}x gagal` : guidance.secondary) || poseInstruction(pose);
 
+  // Top bar
+  if (elements.enrollStudentName) {
+    const name = state.personId ? (state.lastFrameResponse?.student_id || "") : "";
+    elements.enrollStudentName.textContent = name || "";
+  }
+
+  // Single instruction line below oval
+  if (elements.enrollInstruction) {
+    elements.enrollInstruction.textContent = primaryInstruction;
+  }
+
+  // Oval-center text — only during holding/capturing
+  if (holding || state.requestInFlight) {
+    if (elements.ovalPrimary) elements.ovalPrimary.textContent = state.requestInFlight ? "Merekam..." : "Tahan...";
+    if (elements.ovalSecondary) elements.ovalSecondary.textContent = progress.complete ? "Selesai" : `${progress.accepted + 1}/${state.acceptedPerPose || 1}`;
+  } else if (resp?.accepted) {
+    if (elements.ovalPrimary) elements.ovalPrimary.textContent = "Berhasil";
+    if (elements.ovalSecondary) elements.ovalSecondary.textContent = resp.next_pose ? "Lanjut pose berikutnya" : "Semua pose selesai";
+  } else {
+    if (elements.ovalPrimary) elements.ovalPrimary.textContent = "";
+    if (elements.ovalSecondary) elements.ovalSecondary.textContent = "";
+  }
+
+  // Guide tone
   elements.cameraStage.dataset.guideTone = tone;
   elements.cameraStage.dataset.flowState = state.requestInFlight ? "capturing" : holding ? "holding" : state.enrollmentState;
-  elements.currentStepLabel.textContent = `${poseTitle(pose)} ${progress.accepted}/${state.acceptedPerPose || 0}`;
-  elements.currentPoseTitle.textContent = primaryInstruction;
-  elements.currentPoseInstruction.textContent = poseInstruction(pose);
-  elements.progressLabel.textContent = `${state.progressPercent.toFixed(0)}%`;
-  elements.progressFill.style.width = `${state.progressPercent}%`;
-  elements.speedLabel.textContent = speedModeLabel();
-  elements.liveInstruction.textContent = primaryInstruction;
-  elements.ovalPrimary.textContent = primaryInstruction;
-  elements.ovalSecondary.textContent = userFacingInstructionText(ovalSecondary);
-  if (!holding && !state.requestInFlight && !state.lastFrameResponse?.accepted) {
-    elements.faceOval.style.setProperty("--hold-progress", "0");
-    elements.faceOval.style.setProperty("--hold-angle", "0deg");
-  }
-  const stuckClass = stuckAdjust ? "stuck-adjust" : "";
-  elements.uiHint.textContent = stuckAdjust && resp?.rejected_count_for_pose ? `${state.uiHint} (${resp.rejected_count_for_pose})` : state.uiHint;
-  elements.uiHint.className = `ui-hint ${tone} ${stuckClass}`;
-  const transitioning = state.enrollmentState === "pose_complete" || state.enrollmentState === "next_pose";
-  elements.startButton.disabled = !state.cameraReady || Boolean(state.enrollmentSessionId) || state.enrollmentState === "starting";
-  elements.captureButton.disabled = !state.enrollmentSessionId || state.requestInFlight || transitioning || !pose || allPosesComplete();
+
+  // Cancel button
   elements.cancelButton.disabled =
     state.enrollmentState === "finishing" ||
     state.enrollmentState === "complete" ||
     (!state.enrollmentSessionId && state.enrollmentState !== "error");
+
+  // Manual buttons
+  elements.captureButton.disabled = !state.enrollmentSessionId || state.requestInFlight || !pose || allPosesComplete();
   elements.finishButton.disabled = !state.enrollmentSessionId || !allPosesComplete() || state.enrollmentState === "finishing";
+
+  // Arrows
   activateArrow(guidance.arrow);
-  setStatusBadge(state.requestInFlight ? "validating" : state.captureStatus);
+
+  // Guide geometry
   renderGuideGeometry(state.lastFrameResponse);
-  renderPoseGrid();
+
+  // Pose dots
+  renderPoseDots();
+
+  // Status dot
+  setStatusBadge(state.requestInFlight ? "capturing" : state.captureStatus);
+
+  // Bottom sheet for warnings
+  if (elements.enrollBottomSheet && elements.enrollWarning) {
+    const showWarning = stuckAdjust || (resp && !resp.accepted && !holding && !state.requestInFlight);
+    elements.enrollBottomSheet.classList.toggle("is-hidden", !showWarning);
+    if (showWarning) {
+      const reason = resp?.reason ? (QUALITY_GUIDANCE_COPY[normalizeQualityReason(resp.reason)] || resp.ui_hint || "") : "";
+      elements.enrollWarning.textContent = reason;
+    }
+  }
 }
 
 function readIdentityForm() {
@@ -2644,7 +3160,12 @@ class ApiError extends Error {
     this.url = options.url ?? null;
     this.body = options.body ?? null;
     this.cause = options.cause ?? null;
+    this.retryAfterMs = options.retryAfterMs ?? null;
   }
+}
+
+function authFailureError(error) {
+  return error instanceof ApiError && (error.status === 401 || error.status === 403);
 }
 
 function detailMessage(body) {
@@ -2736,7 +3257,7 @@ async function readResponseBody(response) {
   }
 }
 
-async function getJson(path) {
+async function getJson(path, { suppressErrorLog = false } = {}) {
   const url = `${API_BASE_URL}${path}`;
   let response;
   try {
@@ -2749,18 +3270,24 @@ async function getJson(path) {
   const body = await readResponseBody(response);
   if (!response.ok) {
     const message = response.status >= 500 ? serverErrorMessageFor(path) : detailMessage(body) ?? "Koneksi ke backend gagal";
-    console.error("API request failed", { url, status: response.status, body });
-    throw new ApiError(message, { status: response.status, url, body });
+    if (!suppressErrorLog) {
+      console.error("API request failed", { url, status: response.status, body });
+    }
+    if (shouldStopForAuthFailure(path, response.status)) {
+      handleAuthRequired(SESSION_NOT_READY_MESSAGE);
+    }
+    throw new ApiError(message, { status: response.status, url, body, retryAfterMs: retryAfterMs(response) });
   }
   return body;
 }
 
 async function postJson(path, payload) {
+  ensureUnsafeRequestAllowed("POST", path);
   const url = `${API_BASE_URL}${path}`;
   let response;
   const headers = {
     "Content-Type": "application/json",
-    ...csrfHeaders("POST"),
+    ...(path === "/auth/login" ? {} : csrfHeaders("POST")),
   };
   try {
     response = await fetch(url, {
@@ -2781,7 +3308,10 @@ async function postJson(path, payload) {
         ? serverErrorMessageFor(path)
         : detailMessage(body) ?? "Gambar gagal dikirim";
     console.error("API request failed", { url, status: response.status, body });
-    throw new ApiError(message, { status: response.status, url, body });
+    if (shouldStopForAuthFailure(path, response.status)) {
+      handleAuthRequired(SESSION_NOT_READY_MESSAGE);
+    }
+    throw new ApiError(message, { status: response.status, url, body, retryAfterMs: retryAfterMs(response) });
   }
   return body;
 }
@@ -2789,6 +3319,7 @@ async function postJson(path, payload) {
 async function apiJson(method, path, payload) {
   const upperMethod = String(method).toUpperCase();
   const url = `${API_BASE_URL}${path}`;
+  ensureUnsafeRequestAllowed(upperMethod, path);
 
   const headers = {
     ...csrfHeaders(upperMethod),
@@ -2818,10 +3349,14 @@ async function apiJson(method, path, payload) {
     const message = detailMessage(body) ?? "Permintaan gagal";
     if (response.status === 403 && body?.detail && String(body.detail).includes("CSRF")) {
       console.warn("CSRF validation failed", { url, status: response.status, body });
+      handleAuthRequired(SESSION_NOT_READY_MESSAGE);
       throw new ApiError("Sesi keamanan tidak valid. Silakan login ulang.", { status: response.status, url, body });
     }
     console.error("API request failed", { url, status: response.status, body });
-    throw new ApiError(message, { status: response.status, url, body });
+    if (shouldStopForAuthFailure(path, response.status)) {
+      handleAuthRequired(SESSION_NOT_READY_MESSAGE);
+    }
+    throw new ApiError(message, { status: response.status, url, body, retryAfterMs: retryAfterMs(response) });
   }
   return body;
 }
@@ -2858,13 +3393,9 @@ async function captureAttendanceFrames() {
   return captureBurst({ quality: 0.72, maxWidth: 640, delayMs: 60 });
 }
 
-function startAttendanceMode() {
+async function startAttendanceMode() {
   closeIdentityModal();
   clearTransitionTimer();
-  state.attendanceStatus = !state.cameraReady && state.cameraStatus === "disconnected" ? "error" : "scanning";
-  if (state.attendanceStatus === "error") {
-    state.uiHint = state.cameraWarning || "Kamera tidak tersedia";
-  }
   state.attendanceRequestInFlight = false;
   state.attendanceLastRequestAt = 0;
   state.attendanceDynamicDelay = ATTENDANCE_SCAN_INTERVAL_MS;
@@ -2876,12 +3407,26 @@ function startAttendanceMode() {
   state.attendanceSessionNotice = "";
   state.pendingAttendance = null;
   state.attendanceConfirmInFlight = false;
+  state.selectedAttendanceClassId = null;
+  state.selectedAttendanceSessionId = null;
+  state.availableAttendanceClasses = [];
+  state.availableAttendanceSessions = [];
+  state.attendanceClassLookupInFlight = false;
+  state.attendanceClassLoadError = "";
+  state.attendanceSessionLookupInFlight = false;
+  state.attendanceSessionLoadError = "";
+  state.attendanceSessionLookupDone = false;
+  attendanceSessionLookupPromise = null;
   setScreen("recognize");
+  await loadAttendanceClasses();
+  state.attendanceStatus = "no_session";
   renderAttendance();
-  startAttendanceLoop();
 }
 
 function startAttendanceLoop() {
+  if (!state.selectedAttendanceSessionId) {
+    return;
+  }
   if (state.attendanceLoopId) {
     return;
   }
@@ -2908,22 +3453,73 @@ function updateAttendanceStatusFromResponse(response, checkinRequested) {
     state.attendanceStatus = "quality_rejected";
     state.uiHint = qualityGuidanceMessage(response);
     state.attendancePausedUntil = Date.now() + 900;
+    showAttendanceToast("warning", qualityGuidanceMessage(response), 1500);
     return;
   }
   if (response.reason === "candidate_margin_too_small") {
     state.attendanceStatus = "ambiguous";
     state.uiHint = "Data wajah terlalu mirip. Coba ulangi posisi wajah.";
     state.attendancePausedUntil = Date.now() + ATTENDANCE_RESULT_PAUSE_MS;
+    showAttendanceToast("warning", "Data wajah terlalu mirip", 1800);
     return;
   }
-  if (recognitionStatus === "no_matching_session" || recognitionStatus === "multiple_matching_sessions") {
+  if (recognitionStatus === "no_matching_session") {
     state.attendanceStatus = recognitionStatus;
     state.uiHint = attendanceMessageFromResponse(response);
-    state.attendancePausedUntil = Number.POSITIVE_INFINITY;
-    showAttendanceConfirmModal(response);
+    state.attendancePausedUntil = Date.now() + 3000;
+    showAttendanceEdgeSheet({
+      title: "Tidak ada jadwal sesuai",
+      message: "Wajah dikenali, tetapi tidak ada sesi absensi yang aktif untuk kelas ini saat ini.",
+      actions: [
+        { label: "Tutup", variant: "secondary", handler: () => { discardPendingAttendance(); } },
+        { label: "Coba Lagi", variant: "primary", handler: () => { discardPendingAttendance(); } },
+      ],
+    });
+    return;
+  }
+  if (recognitionStatus === "multiple_matching_sessions") {
+    const sessions = response?.matching_sessions ?? response?.sessions ?? [];
+    if (sessions.length === 0) {
+      showAttendanceConfirmModal(response);
+      return;
+    }
+    state.attendanceStatus = recognitionStatus;
+    state.uiHint = attendanceMessageFromResponse(response);
+    state.attendancePausedUntil = Date.now() + 5000;
+    const sessionActions = sessions.slice(0, 3).map((s) => ({
+      label: s.session_name ?? s.session_code ?? "Pilih",
+      variant: "primary",
+      handler: () => {
+        state.pendingAttendance = { response, photo: attendancePreviewPhoto(response) };
+        state.attendanceLastResponse = { ...response, resolved_session: s };
+        state.attendanceStatus = "recognized";
+        state.uiHint = "Periksa detail absensi";
+        state.attendancePausedUntil = Number.POSITIVE_INFINITY;
+        showAttendanceConfirmModal({ ...response, resolved_session: s });
+      },
+    }));
+    showAttendanceEdgeSheet({
+      title: "Pilih jadwal",
+      message: "Ditemukan lebih dari satu sesi yang sesuai. Pilih salah satu untuk melanjutkan.",
+      actions: [
+        ...sessionActions,
+        { label: "Batal", variant: "secondary", handler: () => { discardPendingAttendance(); } },
+      ],
+    });
     return;
   }
   if (recognitionStatus === "recognized") {
+    const hasResolvedSession = Boolean(response?.resolved_session);
+    if (hasResolvedSession) {
+      const photo = attendancePreviewPhoto(response);
+      state.pendingAttendance = { response, photo };
+      state.attendanceLastResponse = response;
+      state.attendanceStatus = "recognized";
+      state.uiHint = "Periksa detail absensi";
+      state.attendancePausedUntil = Number.POSITIVE_INFINITY;
+      showAttendanceConfirmModal(response);
+      return;
+    }
     state.attendanceStatus = "recognized";
     state.uiHint = "Periksa detail absensi.";
     state.attendancePausedUntil = Number.POSITIVE_INFINITY;
@@ -2937,18 +3533,29 @@ function updateAttendanceStatusFromResponse(response, checkinRequested) {
     if (response.cooldown_remaining_seconds) {
       state.attendanceCooldownUntil = Date.now() + response.cooldown_remaining_seconds * 1000;
     }
+    showAttendanceToast("warning", "Tunggu sebentar", 1800);
+    return;
+  }
+  if (response.reason === "not_in_selected_class") {
+    state.attendanceStatus = "not_in_selected_class";
+    state.uiHint = "Wajah tidak terdaftar pada kelas ini";
+    state.attendancePausedUntil = Date.now() + ATTENDANCE_RESULT_PAUSE_MS;
+    showAttendanceToast("warning", "Wajah tidak terdaftar pada kelas ini", 2000);
     return;
   }
   if (recognitionStatus === "session_inactive") {
     handleInactiveAttendanceSession();
+    showAttendanceToast("warning", "Tidak ada jadwal sesuai", 2000);
     return;
   }
   state.attendanceStatus = "unknown";
   state.uiHint = recognitionRejectionMessage(response);
   state.attendancePausedUntil = Date.now() + ATTENDANCE_RESULT_PAUSE_MS;
+  showAttendanceToast("error", "Wajah tidak dikenali", 1500);
 }
 
 function handleInactiveAttendanceSession(message = "Sesi absensi sudah tidak aktif") {
+  stopAttendanceLoop();
   forgetSessionCode({ notice: message });
   resetAttendanceSessionLookup();
   state.attendanceStatus = "session_inactive";
@@ -2996,6 +3603,9 @@ function formatAttendanceDebug({ endpoint, sessionCode, frames = [], response = 
 }
 
 async function sendAttendanceScan({ manual = false } = {}) {
+  if (!state.selectedAttendanceSessionId) {
+    return;
+  }
   if (!state.cameraReady || state.attendanceRequestInFlight || state.pendingAttendance) {
     return;
   }
@@ -3059,7 +3669,7 @@ async function sendAttendanceScan({ manual = false } = {}) {
   }
 }
 
-async function confirmPendingAttendance() {
+async function confirmPendingAttendance({ auto = false } = {}) {
   const pending = state.pendingAttendance;
   const response = pending?.response;
   const person = response?.person;
@@ -3079,6 +3689,7 @@ async function confirmPendingAttendance() {
       device_code: DEVICE_CODE,
       confidence: response.confidence ?? null,
       captured_face_b64_or_uri: response.captured_face_b64 ?? null,
+      recognition_token: response.pending_attendance_token ?? null,
     });
     if (responseIsCooldown(confirmResponse)) {
       state.attendanceLastResponse = {
@@ -3094,6 +3705,7 @@ async function confirmPendingAttendance() {
       state.attendancePausedUntil = state.attendanceCooldownUntil;
       state.pendingAttendance = null;
       hideAttendanceConfirmModal();
+      showAttendanceToast("warning", "Tunggu sebentar", 1800);
       return;
     }
     appendSuccessfulAttendance(confirmResponse);
@@ -3101,20 +3713,25 @@ async function confirmPendingAttendance() {
       ...response,
       decision: "accepted",
       recognition_status: "recognized",
-      reason: "confirmed_by_user",
+      reason: auto ? "auto_confirmed" : "confirmed_by_user",
       cooldown_remaining_seconds: confirmResponse.cooldown_remaining_seconds,
     };
     state.attendanceStatus = "accepted";
     state.uiHint = "Absensi berhasil";
     state.attendanceCooldownUntil = Date.now() + (confirmResponse.cooldown_remaining_seconds ?? 0) * 1000;
-    state.attendancePausedUntil = state.attendanceCooldownUntil || Date.now() + ATTENDANCE_SUCCESS_PAUSE_MS;
+    state.attendancePausedUntil = Date.now() + ATTENDANCE_SUCCESS_PAUSE_MS;
     state.pendingAttendance = null;
     hideAttendanceConfirmModal();
     playAcceptedFeedback();
+    showAttendanceToast("success", `Berhasil — ${person.full_name}`, 2200);
   } catch (error) {
+    if (authFailureError(error)) {
+      return;
+    }
     state.attendanceStatus = "error";
     state.uiHint = attendanceErrorSummary(error);
     state.attendancePausedUntil = Date.now() + ATTENDANCE_RESULT_PAUSE_MS;
+    showAttendanceToast("error", "Gangguan koneksi", 2000);
   } finally {
     state.attendanceConfirmInFlight = false;
     if (state.pendingAttendance) {
@@ -3128,6 +3745,9 @@ async function confirmPendingAttendance() {
 }
 
 function autoAttendanceTick() {
+  if (!state.selectedAttendanceSessionId) {
+    return;
+  }
   if (state.mode !== "recognize" || !state.cameraReady || state.attendanceRequestInFlight || state.pendingAttendance) {
     return;
   }
@@ -3145,6 +3765,10 @@ function autoAttendanceTick() {
 }
 
 function startAutoCaptureLoop() {
+  if (!authSessionReady()) {
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "enroll" });
+    return;
+  }
   if (state.captureLoopId) {
     return;
   }
@@ -3158,6 +3782,7 @@ function stopAutoCaptureLoop() {
   window.clearInterval(state.captureLoopId);
   state.captureLoopId = null;
   state.stableSince = null;
+  state.enrollmentFrameInFlight = false;
   updateCountdown(null);
 }
 
@@ -3190,7 +3815,10 @@ function resetEnrollmentSession() {
   state.uiHint = "Ikuti panduan di layar.";
   state.lastFrameResponse = null;
   state.requestInFlight = false;
+  state.enrollmentFrameInFlight = false;
   state.lastRequestAt = 0;
+  state.lastEnrollmentFrameAt = 0;
+  state.enrollmentBackoffUntil = 0;
   state.dynamicCaptureDelay = AUTO_CAPTURE_INTERVAL_MS;
   state.autoFinishStarted = false;
   state.consecutiveCaptureErrors = 0;
@@ -3198,13 +3826,16 @@ function resetEnrollmentSession() {
   setEnrollmentState("idle");
   updateMetrics(null);
   elements.result.textContent = "siap";
-  setOverlay("Kamera siap", "idle");
   setScreen("home");
   renderWizard();
 }
 
 async function startEnrollment(event) {
   event.preventDefault();
+  if (!authSessionReady()) {
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "enroll" });
+    return;
+  }
   try {
     stopAutoCaptureLoop();
     closeIdentityModal();
@@ -3216,11 +3847,13 @@ async function startEnrollment(event) {
     state.autoFinishStarted = false;
     state.consecutiveCaptureErrors = 0;
     state.dynamicCaptureDelay = AUTO_CAPTURE_INTERVAL_MS;
+    state.lastEnrollmentFrameAt = 0;
+    state.enrollmentBackoffUntil = 0;
+    state.enrollmentFrameInFlight = false;
     state.lastError = null;
     state.displayPose = null;
     clearTransitionTimer();
     elements.startButton.disabled = true;
-    setOverlay("Memulai pendaftaran...", "validating");
     renderWizard();
 
     const payload = readIdentityForm();
@@ -3233,20 +3866,24 @@ async function startEnrollment(event) {
     state.nextPose = response.required_poses[0] ?? null;
     state.progressPercent = 0;
     state.captureStatus = "searching_face";
-    state.uiHint = "Perekaman otomatis aktif. Posisikan wajah di dalam oval.";
+    state.uiHint = "Perekaman otomatis aktif. Posisikan wajah di dalam lingkaran.";
     setEnrollmentState("searching_face");
     elements.result.textContent = JSON.stringify(response, null, 2);
     updateMetrics(null);
-    setOverlay("Perekaman otomatis aktif", "validating");
+    if (elements.enrollStudentName) {
+      elements.enrollStudentName.textContent = payload.full_name || "";
+    }
     renderWizard();
     startAutoCaptureLoop();
   } catch (error) {
+    if (authFailureError(error)) {
+      return;
+    }
     setEnrollmentState("error");
     state.captureStatus = "error";
     state.uiHint = errorSummary(error);
     state.lastError = error;
     renderWizard();
-    setOverlay("Pendaftaran gagal dimulai", "rejected");
     elements.result.textContent = JSON.stringify({ error: errorSummary(error) }, null, 2);
   } finally {
     renderWizard();
@@ -3254,7 +3891,19 @@ async function startEnrollment(event) {
 }
 
 async function captureEnrollmentFrame({ manual = false } = {}) {
-  if (!state.enrollmentSessionId || state.requestInFlight || allPosesComplete()) {
+  if (!authSessionReady()) {
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "enroll" });
+    return;
+  }
+  const now = Date.now();
+  if (
+    !state.enrollmentSessionId ||
+    state.requestInFlight ||
+    state.enrollmentFrameInFlight ||
+    allPosesComplete() ||
+    now < state.enrollmentBackoffUntil ||
+    now - state.lastEnrollmentFrameAt < ENROLLMENT_FRAME_MIN_INTERVAL_MS
+  ) {
     return;
   }
   const pose = currentPose();
@@ -3263,16 +3912,16 @@ async function captureEnrollmentFrame({ manual = false } = {}) {
   }
   try {
     state.requestInFlight = true;
+    state.enrollmentFrameInFlight = true;
     const requestStartedAt = Date.now();
     state.lastRequestAt = requestStartedAt;
+    state.lastEnrollmentFrameAt = requestStartedAt;
     setEnrollmentState("capturing");
     state.captureStatus = "capturing";
     state.uiHint = manual ? "Gambar manual sedang dianalisis..." : "Merekam...";
-    elements.countdownLabel.textContent = "";
     elements.faceOval.style.setProperty("--hold-progress", "1");
     elements.faceOval.style.setProperty("--hold-angle", "360deg");
     renderWizard();
-    setOverlay(`Merekam ${poseTitle(pose)}...`, "validating");
     const response = await postJson("/enroll/frame", {
       enrollment_session_id: state.enrollmentSessionId,
       device_code: DEVICE_CODE,
@@ -3313,7 +3962,6 @@ async function captureEnrollmentFrame({ manual = false } = {}) {
       setEnrollmentState("pose_complete");
       playAcceptedFeedback();
       state.dynamicCaptureDelay = AFTER_ACCEPT_DELAY_MS;
-      setOverlay(response.next_pose ? "Wajah berhasil direkam" : "Semua pose selesai", "accepted");
       scheduleAfterAcceptedFrame(pose, response);
     } else if (
       response.reason === "liveness_below_threshold" &&
@@ -3326,7 +3974,6 @@ async function captureEnrollmentFrame({ manual = false } = {}) {
       setEnrollmentState("adjusting_position");
       state.captureStatus = "liveness_check";
       state.uiHint = "Verifikasi keaslian wajah...";
-      setOverlay("Verifikasi keaslian diperlukan", "validating");
       renderWizard();
       showLivenessChallenge();
       state.dynamicCaptureDelay = 2000;
@@ -3334,7 +3981,6 @@ async function captureEnrollmentFrame({ manual = false } = {}) {
       const nextState = stateFromFrameResponse(response);
       setEnrollmentState(nextState);
       state.captureStatus = nextState;
-      setOverlay(localizedHint(response), responseLooksNearlyReady(response) ? "validating" : "rejected");
     }
 
     if (allPosesComplete()) {
@@ -3351,6 +3997,21 @@ async function captureEnrollmentFrame({ manual = false } = {}) {
 
     renderWizard();
   } catch (error) {
+    if (authFailureError(error)) {
+      return;
+    }
+    if (error instanceof ApiError && error.status === 429) {
+      const backoffMs = Math.max(error.retryAfterMs ?? ENROLLMENT_RATE_LIMIT_BACKOFF_MS, ENROLLMENT_FRAME_MIN_INTERVAL_MS);
+      state.enrollmentBackoffUntil = Date.now() + backoffMs;
+      state.dynamicCaptureDelay = Math.max(state.dynamicCaptureDelay, backoffMs);
+      state.captureStatus = "searching_face";
+      state.uiHint = "Tunggu sebentar sebelum menangkap ulang";
+      state.lastError = error;
+      setEnrollmentState("searching_face");
+      renderWizard();
+      elements.result.textContent = JSON.stringify({ error: state.uiHint, retry_after_ms: backoffMs }, null, 2);
+      return;
+    }
     state.consecutiveCaptureErrors += 1;
     state.dynamicCaptureDelay = clamp(AUTO_CAPTURE_INTERVAL_MS * (state.consecutiveCaptureErrors + 1), 900, MAX_CAPTURE_BACKOFF_MS);
     state.captureStatus = "error";
@@ -3363,20 +4024,25 @@ async function captureEnrollmentFrame({ manual = false } = {}) {
       setEnrollmentState("searching_face");
     }
     renderWizard();
-    setOverlay(state.consecutiveCaptureErrors >= 3 ? "Perekaman dijeda" : "Gambar gagal dikirim. Mencoba lagi", "rejected");
     elements.result.textContent = JSON.stringify({ error: errorSummary(error) }, null, 2);
   } finally {
     state.requestInFlight = false;
+    state.enrollmentFrameInFlight = false;
     state.lastRequestAt = Date.now();
     renderWizard();
   }
 }
 
 function autoCaptureTick() {
+  if (!authSessionReady()) {
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "enroll" });
+    return;
+  }
   if (
     state.mode !== "enroll" ||
     !state.enrollmentSessionId ||
     state.requestInFlight ||
+    state.enrollmentFrameInFlight ||
     allPosesComplete() ||
     state.enrollmentState === "pose_complete" ||
     state.enrollmentState === "next_pose" ||
@@ -3386,7 +4052,7 @@ function autoCaptureTick() {
     return;
   }
   const now = Date.now();
-  if (now - state.lastRequestAt < state.dynamicCaptureDelay) {
+  if (now < state.enrollmentBackoffUntil || now - state.lastEnrollmentFrameAt < ENROLLMENT_FRAME_MIN_INTERVAL_MS) {
     return;
   }
   if (state.stableSince) {
@@ -3399,11 +4065,20 @@ function autoCaptureTick() {
     }
     elements.faceOval.style.setProperty("--hold-progress", "1");
     elements.faceOval.style.setProperty("--hold-angle", "360deg");
+    captureEnrollmentFrame();
+    return;
+  }
+  if (now - state.lastRequestAt < state.dynamicCaptureDelay) {
+    return;
   }
   captureEnrollmentFrame();
 }
 
 async function finishEnrollment({ auto = false } = {}) {
+  if (!authSessionReady()) {
+    handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "enroll" });
+    return;
+  }
   if (!state.enrollmentSessionId || state.enrollmentState === "finishing") {
     return;
   }
@@ -3413,7 +4088,6 @@ async function finishEnrollment({ auto = false } = {}) {
     state.captureStatus = "finishing";
     state.uiHint = auto ? "Semua pose selesai. Menyimpan pendaftaran..." : "Menyimpan pendaftaran...";
     renderWizard();
-    setOverlay("Menyimpan pendaftaran...", "validating");
     const response = await postJson("/enroll/finish", { enrollment_session_id: state.enrollmentSessionId });
     setEnrollmentState("complete");
     state.captureStatus = "complete";
@@ -3423,14 +4097,15 @@ async function finishEnrollment({ auto = false } = {}) {
     elements.result.textContent = JSON.stringify(response, null, 2);
     setScreen("complete");
     renderWizard();
-    setOverlay("Pendaftaran wajah berhasil", "accepted");
   } catch (error) {
+    if (authFailureError(error)) {
+      return;
+    }
     setEnrollmentState("error");
     state.captureStatus = "error";
     state.uiHint = errorSummary(error);
     state.lastError = error;
     renderWizard();
-    setOverlay("Terjadi kesalahan saat menyimpan wajah", "rejected");
     elements.result.textContent = JSON.stringify({ error: errorSummary(error) }, null, 2);
   }
 }
@@ -3548,12 +4223,33 @@ function attachCameraStream(stream) {
   elements.cameraStage.dataset.previewMirrored = VIDEO_PREVIEW_MIRRORED ? "true" : "false";
   state.cameraReady = true;
   state.cameraStatus = "connected";
+  // Auto-recover when the camera track drops (USB unplugged, device slept).
+  // A kiosk has no operator to reload the page, so we restart the stream once.
+  if (track) {
+    track.addEventListener(
+      "ended",
+      () => {
+        if (state.cameraRecovering) return;
+        state.cameraRecovering = true;
+        state.cameraStatus = "disconnected";
+        state.cameraWarning = "Kamera terputus, menyambungkan ulang...";
+        renderWizard();
+        restartCamera()
+          .catch(() => {
+            state.cameraWarning = "Kamera tidak dapat disambungkan ulang. Periksa koneksi kamera.";
+          })
+          .finally(() => {
+            state.cameraRecovering = false;
+          });
+      },
+      { once: true },
+    );
+  }
   elements.status.textContent = JSON.stringify(
     { camera: "ready", label: track?.label ?? "default", tracks: stream.getVideoTracks().length, device_code: DEVICE_CODE, api_base_url: API_BASE_URL },
     null,
     2,
   );
-  setOverlay("Kamera siap", "idle");
   renderWizard();
   if (state.mode === "recognize") startAttendanceLoop();
 }
@@ -3598,20 +4294,43 @@ elements.loginForm.addEventListener("submit", async (event) => {
   try {
     const payload = formObject(elements.loginForm);
     const response = await postJson("/auth/login", payload);
+    if (!csrfToken()) {
+      state.adminUser = null;
+      updateAuthUi();
+      showLogin(SESSION_NOT_READY_MESSAGE);
+      return;
+    }
     state.adminUser = response.user;
     updateAuthUi();
-    await openAdmin();
+    const nextMode = state.pendingModeAfterLogin || "admin";
+    state.pendingModeAfterLogin = null;
+    if (nextMode === "recognize") {
+      setMode("recognize");
+    } else if (nextMode === "enroll") {
+      setMode("enroll");
+      loadAdminData().finally(() => populateIdentityClassOptions());
+      showIdentityModal();
+    } else {
+      await openAdmin();
+    }
   } catch (error) {
     elements.loginError.textContent = errorSummaryFor(error, "Login gagal");
     elements.loginError.classList.remove("is-hidden");
   }
 });
-elements.loginCancelButton.addEventListener("click", () => setMode("recognize"));
+elements.loginCancelButton.addEventListener("click", () => {
+  state.pendingModeAfterLogin = "recognize";
+  stopAutoCaptureLoop();
+  stopAttendanceLoop();
+  state.mode = "home";
+  setScreen("home");
+});
 elements.adminLogoutButton.addEventListener("click", async () => {
   await apiJson("POST", "/auth/logout").catch(() => null);
   state.adminUser = null;
+  state.pendingModeAfterLogin = "recognize";
   updateAuthUi();
-  setMode("recognize");
+  handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "recognize" });
 });
 elements.adminScreen.addEventListener("submit", handleAdminForm);
 elements.adminScreen.addEventListener("click", handleAdminAction);
@@ -3645,20 +4364,51 @@ elements.identityCancelButton.addEventListener("click", closeIdentityModal);
 document.getElementById("student-id")?.addEventListener("input", (event) => {
   event.currentTarget.dataset.userEdited = "true";
 });
-elements.attendanceSessionSelect.addEventListener("change", (event) => {
-  const sessionCode = normalizeSessionCode(event.target.value);
+elements.attendanceSessionSelect.addEventListener("change", async (event) => {
+  const value = event.target.value ? String(event.target.value).trim() : null;
   state.attendanceSessionNotice = "";
-  if (sessionCode) {
-    rememberSessionCode(sessionCode);
+  if (!state.selectedAttendanceClassId) {
+    if (value) {
+      state.selectedAttendanceClassId = value;
+      state.availableAttendanceSessions = [];
+      state.attendanceSessionLookupDone = false;
+      await loadSessionsForClass(value);
+      renderAttendance();
+    }
+    return;
+  }
+  const sessionId = value;
+  if (sessionId) {
+    const session = state.availableAttendanceSessions.find((s) => s.session_id === sessionId);
+    if (session) {
+      rememberSession(session);
+    }
   } else {
     forgetSessionCode();
   }
-  state.attendanceStatus = selectedAttendanceSessionCode() ? "scanning" : "no_session";
-  state.attendanceLastResponse = null;
+  if (state.selectedAttendanceSessionId) {
+    state.attendanceStatus = "scanning";
+    state.attendanceLastResponse = null;
+    startAttendanceLoop();
+  } else {
+    state.attendanceStatus = "no_session";
+    state.attendanceLastResponse = null;
+    stopAttendanceLoop();
+  }
   renderAttendance();
 });
 elements.attendanceConfirmAccept.addEventListener("click", confirmPendingAttendance);
 elements.attendanceConfirmRetry.addEventListener("click", discardPendingAttendance);
+elements.attendanceConfirmCancel.addEventListener("click", () => {
+  discardPendingAttendance();
+  stopAttendanceLoop();
+  state.selectedAttendanceClassId = null;
+  state.selectedAttendanceSessionId = null;
+  state.availableAttendanceClasses = [];
+  state.availableAttendanceSessions = [];
+  state.attendanceStatus = "no_session";
+  renderAttendance();
+});
 elements.captureButton.addEventListener("click", () => captureEnrollmentFrame({ manual: true }));
 elements.finishButton.addEventListener("click", () => finishEnrollment());
 elements.cancelButton.addEventListener("click", cancelEnrollment);
@@ -3673,20 +4423,55 @@ elements.enrollModeButton.addEventListener("click", () => {
 });
 elements.recognizeModeButton.addEventListener("click", () => setMode("recognize"));
 elements.adminModeButton.addEventListener("click", () => setMode("admin"));
+if (elements.attendanceChangeSessionBtn) {
+  elements.attendanceChangeSessionBtn.addEventListener("click", () => {
+    stopAttendanceLoop();
+    forgetSessionCode();
+    state.attendanceStatus = "no_session";
+    state.attendanceLastResponse = null;
+    state.pendingAttendance = null;
+    hideAttendanceConfirmModal();
+    renderAttendance();
+  });
+}
+if (elements.attendanceCloseBtn) {
+  elements.attendanceCloseBtn.addEventListener("click", () => {
+    stopAttendanceLoop();
+    state.attendanceStatus = "no_session";
+    state.attendanceLastResponse = null;
+    state.attendanceLastRequestAt = 0;
+    state.attendanceConsecutiveErrors = 0;
+    state.selectedAttendanceClassId = null;
+    state.selectedAttendanceSessionId = null;
+    state.availableAttendanceClasses = [];
+    state.availableAttendanceSessions = [];
+    setScreen("home");
+    state.mode = "idle";
+    elements.enrollModeButton.classList.remove("is-active");
+    elements.recognizeModeButton.classList.remove("is-active");
+    elements.adminModeButton.classList.remove("is-active");
+  });
+}
 
 renderWizard();
-refreshMe().finally(() => setMode("recognize"));
-startCamera().catch((error) => {
-  setEnrollmentState("error");
-  state.cameraReady = false;
-  state.cameraStatus = "disconnected";
-  state.attendanceStatus = "error";
-  state.cameraWarning = cameraWarningFor(error);
-  state.uiHint = state.cameraWarning;
-  const details = cameraErrorDetails(error);
-  elements.status.textContent = JSON.stringify(details, null, 2);
-  elements.recognitionResult.textContent = JSON.stringify(details, null, 2);
-  setOverlay("Kamera tidak tersedia", "rejected");
-  renderWizard();
-});
+(async function bootstrapKiosk() {
+  // Public kiosk: attendance mode does NOT require admin login.
+  // Silently refresh admin session so the Admin / Daftarkan Wajah buttons
+  // light up if a cookie is already valid, but never force the login screen.
+  await refreshMe({ showLoginOnFailure: false, intendedMode: "recognize" }).catch(() => false);
+  setMode("recognize");
+  startCamera().catch((error) => {
+    setEnrollmentState("error");
+    state.cameraReady = false;
+    state.cameraStatus = "disconnected";
+    state.attendanceStatus = "error";
+    state.cameraWarning = cameraWarningFor(error);
+    state.uiHint = state.cameraWarning;
+    const details = cameraErrorDetails(error);
+    elements.status.textContent = JSON.stringify(details, null, 2);
+    elements.recognitionResult.textContent = JSON.stringify(details, null, 2);
+    setOverlay("Kamera tidak tersedia", "rejected");
+    renderWizard();
+  });
+})();
 

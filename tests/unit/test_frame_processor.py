@@ -56,7 +56,7 @@ class FakeQualityGate:
 
 
 class FakeTemplateMatcher:
-    async def search(self, embedding: list[float], limit: int = 3) -> list:
+    async def search(self, embedding: list[float], limit: int = 3, class_id=None) -> list:
         return []
 
     def decision_for(self, candidates, quality, similarity_threshold):

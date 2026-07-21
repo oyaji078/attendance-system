@@ -2,87 +2,113 @@
 
 Mode ini menjalankan hanya service infrastruktur di Docker:
 
-- PostgreSQL + pgvector lewat `pgvector/pgvector:pg16`
-- Redis lewat `redis:7.4-alpine`
-- API Python berjalan langsung di Windows dari venv `D:\PythonVenvs\attendance-api`
+- PostgreSQL + pgvector melalui `pgvector/pgvector:pg16`
+- Redis melalui `redis:7.4-alpine`
+- API Python berjalan langsung di Windows
 - Kiosk UI berjalan langsung di Windows sebagai static server
 - Model berada di `D:\cnn\attendance-system\models`
 - Data app berada di `D:\cnn\attendance-system\data`
 
-Mode ini sengaja tidak menjalankan full Docker untuk API, migration, kiosk UI, atau kiosk agent. Docker hanya dipakai untuk Postgres dan Redis.
-
-## Alasan
-
-Mode ini lebih hemat storage lokal karena dependency Python tidak dibangun lagi ke image Docker API. Model InsightFace dan data app tetap berada di drive D project, bukan SSD eksternal. Setup ini juga lebih stabil dibanding menyimpan Docker storage di SSD eksternal, karena Docker Desktop tetap memakai lokasi storage aktif yang sudah dipindahkan ke `D:\DockerDesktopData\DockerDesktopWSL`.
-
-Jangan gunakan SSD eksternal `E:` untuk model, Docker storage, venv, atau data project pada mode ini.
+Mode ini tidak menjalankan full Docker untuk API, migration, kiosk UI, atau kiosk agent. Docker hanya dipakai untuk Postgres dan Redis.
 
 ## Path Penting
 
 - Project: `D:\cnn\attendance-system`
-- Venv Python: `D:\PythonVenvs\attendance-api`
 - Model root: `D:\cnn\attendance-system\models`
 - InsightFace model root: `D:\cnn\attendance-system\models\insightface`
 - Data root: `D:\cnn\attendance-system\data`
 - Object storage lokal: `D:\cnn\attendance-system\data\object-storage`
+- Runtime PID files: `.runtime\`
+- Logs: `logs\`
 
-Model InsightFace `buffalo_l` harus berada di `D:\cnn\attendance-system\models\insightface\models\buffalo_l`, atau mengikuti struktur yang sesuai dengan nilai `INSIGHTFACE_MODEL_ROOT` di `.env.local-api`.
+Python dipilih otomatis dari urutan berikut:
+
+1. Environment variable `ATTENDANCE_PYTHON`
+2. `.venv\Scripts\python.exe`
+3. `D:\PythonVenvs\attendance-api\Scripts\python.exe`
+4. `python` dari PATH
 
 ## Menjalankan
 
 Jalankan dari root project `D:\cnn\attendance-system`.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/check-local-setup.ps1
-powershell -ExecutionPolicy Bypass -File scripts/start-infra.ps1
-powershell -ExecutionPolicy Bypass -File scripts/run-migrations-local.ps1
-powershell -ExecutionPolicy Bypass -File scripts/start-api-local.ps1
-powershell -ExecutionPolicy Bypass -File scripts/start-kiosk-local.ps1
-```
-
-`run-migrations-local.ps1` membutuhkan Postgres dari `start-infra.ps1` sudah berjalan.
-
-## One-command local launcher
-
-Untuk menjalankan seluruh mode lokal dari satu terminal, gunakan launcher berikut:
+First-time setup:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start-project-local.ps1
+powershell -ExecutionPolicy Bypass -File scripts/setup-dev.ps1
 ```
 
-Jika migration perlu dijalankan sebelum API dan kiosk dinyalakan:
+Start local development stack:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/start-project-local.ps1 -RunMigrations
+powershell -ExecutionPolicy Bypass -File scripts/start-dev.ps1
 ```
 
-Cek status semua komponen:
+Stop API dan kiosk, tetapi biarkan Postgres/Redis tetap berjalan:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/status-project-local.ps1
+powershell -ExecutionPolicy Bypass -File scripts/stop-dev.ps1
 ```
 
-Stop semua komponen lokal dengan aman:
+Stop semuanya termasuk Postgres dan Redis:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/stop-project-local.ps1
+powershell -ExecutionPolicy Bypass -File scripts/stop-dev.ps1 -StopDocker
 ```
 
-Restart semuanya:
+Restart API dan jalankan migration:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/restart-project-local.ps1
+powershell -ExecutionPolicy Bypass -File scripts/restart-api.ps1
 ```
 
-Launcher ini tetap memakai Docker hanya untuk PostgreSQL dan Redis melalui `docker/docker-compose.infra.yml`. API dan Kiosk berjalan di background sebagai proses lokal Windows, sehingga tidak perlu membuka dua terminal terpisah. Log runtime ditulis ke `logs/`, sementara PID file disimpan di `.runtime/` agar proses bisa dicek dan dihentikan dengan bersih.
+Jalankan migration saja:
 
-Launcher ini tidak menjalankan full Docker compose, tidak build image, tidak menghapus volume, dan tidak menjalankan prune.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/migrate.ps1
+```
+
+Launcher ini tetap memakai Docker hanya untuk PostgreSQL dan Redis melalui `docker/docker-compose.infra.yml`. API dan kiosk berjalan di background sebagai proses lokal Windows, sehingga tidak perlu membuka dua terminal terpisah.
 
 ## URL
 
 - API: http://localhost:8000
 - API health check: http://localhost:8000/health
+- OpenAPI: http://localhost:8000/docs
 - Kiosk UI: http://localhost:8080
+- DB browser: http://localhost:8081 setelah menjalankan `scripts/db-browser.ps1`
+
+## Database Browser
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/db-browser.ps1
+```
+
+Adminer login:
+
+```text
+System: PostgreSQL
+Server: host.docker.internal:5432
+Username: attendance
+Password: attendance
+Database: attendance
+```
+
+Jika `host.docker.internal` tidak berhasil, gunakan `docker-postgres-1` saat Adminer berjalan di network Docker yang sama.
+
+## Shell Helpers
+
+PostgreSQL:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/db-shell.ps1
+```
+
+Redis:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/redis-shell.ps1
+```
 
 ## Admin Login Lokal
 
@@ -91,12 +117,12 @@ Admin dibuat otomatis saat API start jika tabel `admin_users` masih kosong. Nila
 ```text
 DEFAULT_ADMIN_USERNAME=admin
 DEFAULT_ADMIN_PASSWORD=admin-local-1234
-AUTH_SECRET_KEY=attendance-local-dev-change-this
+AUTH_SECRET_KEY=attendance-local-dev-change-this-minimum-32
 ```
 
-Ganti password dan secret tersebut sebelum dipakai di lingkungan selain lokal. Halaman admin dan endpoint `/admin/*` serta `/enroll/*` membutuhkan cookie login admin. Halaman absensi publik tetap dapat memakai `/recognize` dan `/attendance/checkin` tanpa login.
+Ganti password dan secret tersebut sebelum dipakai di lingkungan selain lokal. Endpoint `/admin/*` dan `/enroll/*` membutuhkan cookie login admin. Halaman absensi publik tetap dapat memakai flow kiosk tanpa login admin.
 
-## Melengkapi Model InsightFace Buffalo_l
+## Model InsightFace Buffalo_l
 
 Model wajib berada di:
 
@@ -124,16 +150,36 @@ Download model jika belum ada:
 powershell -ExecutionPolicy Bypass -File scripts/download-insightface-buffalo-l.ps1
 ```
 
-Script download akan meminta konfirmasi sebelum mengunduh karena ukuran model cukup besar. Target download tetap di `D:\cnn\attendance-system\models\insightface`; model tidak disimpan di `E:` dan tidak memakai cache default di drive `C`.
+## Backup Dan Cleanup
 
-Folder `models` tetap berada di drive D dan tidak masuk Git. `.gitignore` sudah mengabaikan `models/*` dan file model besar seperti `.onnx`, `.pt`, `.pth`, `.bin`, `.safetensors`, dan `.gguf`, tetapi tetap mengizinkan `models/.gitkeep`.
+Buat backup database:
 
-InsightFace `buffalo_l` adalah model pretrained. Tidak perlu dataset training besar untuk menjalankan inference. Yang dibutuhkan untuk penggunaan aplikasi adalah foto enrollment atau foto referensi wajah untuk data orang yang akan dikenali.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/backup-db.ps1
+```
+
+Dry-run cleanup face data:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/cleanup-face-data.ps1
+```
+
+Execute cleanup face data hanya setelah review dry-run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/cleanup-face-data.ps1 -Execute -BackupFirst
+```
+
+Archive report lama:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/cleanup-reports.ps1 -Archive
+```
 
 ## Catatan Docker
 
 Compose infra ada di `docker/docker-compose.infra.yml` dan hanya berisi `postgres` serta `redis`.
 
-Jangan menjalankan compose full `docker/docker-compose.yml` kecuali memang ingin mode full Docker. Untuk mode hemat storage ini, gunakan script `scripts/start-infra.ps1` dan `scripts/stop-infra.ps1`.
+Jangan menjalankan compose full `docker/docker-compose.yml` kecuali memang ingin mode full Docker. Untuk mode hemat storage ini, gunakan `scripts/start-dev.ps1` dan `scripts/stop-dev.ps1`.
 
-`scripts/stop-infra.ps1` hanya menjalankan `docker compose stop`. Script ini tidak memakai `down -v` dan tidak menghapus volume.
+`scripts/stop-dev.ps1` default tidak menghentikan Docker infra. Gunakan `-StopDocker` jika ingin menghentikan PostgreSQL dan Redis.

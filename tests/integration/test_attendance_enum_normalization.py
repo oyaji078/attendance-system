@@ -12,9 +12,23 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.admin import router as admin_router
-from app.core.dependencies import get_attendance_session_service, get_session, require_admin
+from app.core.dependencies import get_attendance_session_service, get_container, get_session, require_admin
 from db.repositories.attendance import AttendanceSessionProjection
 from services.attendance.session_service import AttendanceSessionService
+
+
+class FakeCache:
+    async def get_cached(self, key: str):
+        return None
+
+    async def set_cached(self, key: str, data, ttl: int) -> None:
+        return None
+
+    async def invalidate_cached(self, key: str) -> None:
+        return None
+
+    async def invalidate_prefix(self, prefix: str) -> None:
+        return None
 
 
 class CountResult:
@@ -52,6 +66,10 @@ class FakeSessionProjectionRepository:
             cooldown_seconds=30,
             starts_at=None,
             ends_at=None,
+            repeat_days=None,
+            start_time=None,
+            end_time=None,
+            timezone="Asia/Makassar",
             created_at=now,
             updated_at=now,
             deleted_at=now,
@@ -106,6 +124,7 @@ def build_app(*, attendance_service=None, db_session=None) -> FastAPI:
     app = FastAPI()
     app.include_router(admin_router)
     app.dependency_overrides[require_admin] = lambda: True
+    app.dependency_overrides[get_container] = lambda: SimpleNamespace(cache=FakeCache())
     if attendance_service is not None:
         app.dependency_overrides[get_attendance_session_service] = lambda: attendance_service
     if db_session is not None:

@@ -58,10 +58,10 @@ async def logout(request: Request, response: Response) -> dict[str, str]:
     response.delete_cookie("admin_session", path="/")
     response.delete_cookie(CSRF_COOKIE_NAME, path="/")
     container = getattr(request.app.state, "container", None)
-    if container and container.csrf_protection and container.csrf_protection._redis:
+    if container and container.csrf_protection:
         csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
         if csrf_cookie:
-            await container.csrf_protection._redis.delete(f"csrf:{csrf_cookie}")
+            await container.csrf_protection.invalidate_token(csrf_cookie)
     return {"status": "ok"}
 
 

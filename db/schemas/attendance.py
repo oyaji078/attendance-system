@@ -20,6 +20,7 @@ class AttendanceCheckinRequest(BaseModel):
 class AttendancePreviewRequest(BaseModel):
     device_code: str = Field(min_length=1, max_length=64)
     frames: list[FrameInput] = Field(min_length=3, max_length=3)
+    session_id: str | None = Field(default=None, max_length=64)
 
 
 class AttendanceConfirmRequest(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -11,7 +12,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes.admin import router as admin_router
-from app.core.dependencies import get_attendance_session_service, get_session, require_admin
+from app.core.dependencies import get_attendance_session_service, get_container, get_session, require_admin
+
+
+class FakeCache:
+    async def get_cached(self, key: str):
+        return None
+
+    async def set_cached(self, key: str, data, ttl: int) -> None:
+        return None
+
+    async def invalidate_cached(self, key: str) -> None:
+        return None
+
+    async def invalidate_prefix(self, prefix: str) -> None:
+        return None
 
 
 class DummySession:
@@ -93,6 +108,7 @@ def build_app(service: FakeAttendanceSessionService) -> FastAPI:
     app.dependency_overrides[require_admin] = lambda: True
     app.dependency_overrides[get_attendance_session_service] = lambda: service
     app.dependency_overrides[get_session] = override_session
+    app.dependency_overrides[get_container] = lambda: SimpleNamespace(cache=FakeCache())
     return app
 
 

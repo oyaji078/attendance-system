@@ -33,3 +33,29 @@ def test_asyncpg_vector_bind_keeps_value_numeric() -> None:
 
     assert isinstance(value, list)
     assert value == pytest.approx([0.1, 0.2, 0.3])
+
+
+def test_normalize_embedding_rejects_nan_values() -> None:
+    embedding = [0.1] * 512
+    embedding[7] = float("nan")
+    with pytest.raises(ValueError, match="finite"):
+        normalize_embedding_for_db(embedding)
+
+
+def test_normalize_embedding_rejects_infinite_values() -> None:
+    embedding = [0.1] * 512
+    embedding[511] = float("inf")
+    with pytest.raises(ValueError, match="finite"):
+        normalize_embedding_for_db(embedding)
+
+
+def test_normalize_embedding_rejects_non_numeric_values() -> None:
+    with pytest.raises(ValueError, match="numeric"):
+        normalize_embedding_for_db([0.1, "x", 0.3], dimension=3)
+
+
+def test_normalize_embedding_rejects_wrong_dimension_bind_path() -> None:
+    dialect = SimpleNamespace(name="postgresql", driver="asyncpg")
+    processor = AsyncpgVector(3).bind_processor(dialect)
+    with pytest.raises(ValueError, match="3-d"):
+        processor([0.1, 0.2])

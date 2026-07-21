@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -141,7 +142,7 @@ class EnrollmentService:
                 quality=quality,
             )
         if request.challenge_id is not None and self.challenge_service is not None:
-            liveness_result: ChallengeResult = self.challenge_service.verify(
+            liveness_result: ChallengeResult = await self.challenge_service.verify(
                 request.challenge_id, request.frame_b64
             )
             if not liveness_result.passed:
@@ -264,11 +265,14 @@ class EnrollmentService:
             )
         sample_id = uuid4()
         crop_started_at = perf_counter()
-        face_crop_bytes = crop_face_jpeg(analysis.frame, analysis.faces[0].bbox)
+        crop_task = asyncio.create_task(
+            asyncio.to_thread(crop_face_jpeg, analysis.frame, analysis.faces[0].bbox)
+        )
+        embedding = analysis.faces[0].embedding
+        face_crop_bytes = await crop_task
         crop_ms = (perf_counter() - crop_started_at) * 1000.0
         write_started_at = perf_counter()
         image_uri = await self.object_storage.put_bytes(f"enrollment/{state.person_id}/{state.enrollment_session_id}/{sample_id}.jpg", face_crop_bytes)
-        embedding = analysis.faces[0].embedding
         try:
             await self.face_sample_repository.add(
                 FaceSample(
@@ -287,10 +291,33 @@ class EnrollmentService:
                 )
             )
             sample_write_ms = (perf_counter() - write_started_at) * 1000.0
+            # Commit the sample BEFORE advancing the Redis pose counters: if
+            # the commit fails, counters must not claim progress the database
+            # lost (finish() would then be permanently blocked on missing
+            # samples). The reverse failure (commit ok, Redis update lost)
+            # only costs the user one extra frame for this pose.
+            commit_started_at = perf_counter()
+            await self.session.commit()
+            db_commit_ms = (perf_counter() - commit_started_at) * 1000.0
         except Exception as exc:
             rollback = getattr(self.session, "rollback", None)
             if rollback is not None:
                 await rollback()
+            # Compensate the storage write: the crop was persisted before the
+            # database row, so a failed flush/commit must remove the file or
+            # it becomes an orphan no sample row references. delete_paths is
+            # root-jailed, so only the freshly written crop can be affected.
+            orphan_deleted = 0
+            try:
+                orphan_deleted = await self.object_storage.delete_paths([image_uri])
+            except Exception:
+                LOGGER.warning(
+                    "enrollment_orphan_cleanup_failed",
+                    extra={
+                        "enrollment_session_id": str(state.enrollment_session_id),
+                        "sample_id": str(sample_id),
+                    },
+                )
             LOGGER.exception(
                 "enrollment_sample_store_failed",
                 extra={
@@ -301,15 +328,13 @@ class EnrollmentService:
                     "embedding_type": type(embedding).__name__,
                     "embedding_length": self._safe_len(embedding),
                     "error_type": type(exc).__name__,
+                    "orphan_file_deleted": bool(orphan_deleted),
                 },
             )
             raise RuntimeError("Accepted frame could not be stored.") from exc
         state.accepted_counts[request.pose] += 1
         state.rejected_counts[request.pose] = 0
         await self.cache.set_enrollment_state(state)
-        commit_started_at = perf_counter()
-        await self.session.commit()
-        db_commit_ms = (perf_counter() - commit_started_at) * 1000.0
         LOGGER.info(
             "enrollment_frame_accepted",
             extra={

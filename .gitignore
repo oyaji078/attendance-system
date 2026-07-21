@@ -8,7 +8,11 @@ venv/
 *.pyo
 *.pyd
 .env
+.env.local-api
 .runtime/
+backups/
+archive/
+reports/
 logs/*.log
 logs/*.err.log
 logs/*.out.log

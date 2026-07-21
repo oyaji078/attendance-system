@@ -28,6 +28,9 @@ class FakeDeviceRepository:
             },
         )()
 
+    async def get_by_code_cached(self, device_code, cache=None):
+        return await self.get_by_code(device_code)
+
 
 class FakeAttendanceRepository:
     def __init__(self, session_record) -> None:

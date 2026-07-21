@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, Time, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -126,6 +126,10 @@ class AttendanceSession(Base):
     cooldown_seconds: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    repeat_days: Mapped[list[str] | None] = mapped_column(JSON, nullable=True, default=None)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True, server_default="Asia/Makassar")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -140,7 +144,9 @@ class FaceSample(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     person_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("persons.id", ondelete="CASCADE"))
-    enrollment_session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), index=True)
+    # Transient enrollment workflow id (generated per enrollment run, kept in
+    # Redis) — intentionally NOT a foreign key to attendance_sessions.
+    enrollment_session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     pose: Mapped[str] = mapped_column(String(32), index=True)
     embedding: Mapped[list[float]] = mapped_column(AsyncpgVector(VECTOR_DIMENSION), nullable=False)
     image_uri: Mapped[str | None] = mapped_column(Text, nullable=True)

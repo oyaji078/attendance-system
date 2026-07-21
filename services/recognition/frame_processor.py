@@ -24,7 +24,9 @@ class TemplateMatcher:
         self.template_repository = template_repository
         self.confidence_threshold = confidence_threshold
 
-    async def search(self, embedding: list[float], limit: int = 3) -> list[TemplateMatch]:
+    async def search(self, embedding: list[float], limit: int = 3, class_id=None) -> list[TemplateMatch]:
+        if class_id is not None:
+            return await self.template_repository.search_active_for_class(embedding, class_id, limit=limit)
         return await self.template_repository.search_active(embedding, limit=limit)
 
     def decision_for(self, candidates: list[TemplateMatch], quality: QualityResult, similarity_threshold: float) -> RecognitionFrameDecision:
@@ -93,7 +95,7 @@ class RecognitionFrameProcessor:
         self.template_matcher = template_matcher
         self.quality_mode = quality_mode
 
-    async def process(self, frame_input: FrameInput, device: DeviceConfig) -> ProcessedRecognitionFrame:
+    async def process(self, frame_input: FrameInput, device: DeviceConfig, class_id=None) -> ProcessedRecognitionFrame:
         started_at = perf_counter()
         pipeline_started_at = perf_counter()
         analysis = await self.pipeline.analyze(
@@ -141,7 +143,7 @@ class RecognitionFrameProcessor:
                 candidates=[],
             )
         search_started_at = perf_counter()
-        candidates = await self.template_matcher.search(analysis.faces[0].embedding, limit=3)
+        candidates = await self.template_matcher.search(analysis.faces[0].embedding, limit=3, class_id=class_id)
         search_ms = (perf_counter() - search_started_at) * 1000.0
         decision = self.template_matcher.decision_for(candidates, quality, device.similarity_threshold)
         LOGGER.info(

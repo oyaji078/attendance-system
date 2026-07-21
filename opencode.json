@@ -1,0 +1,55 @@
+{
+  "lsp": {
+    "python": {
+      "enabled": true,
+      "server": "pyright",
+      "settings": {
+        "python.analysis": {
+          "autoSearchPaths": true,
+          "useLibraryCodeForTypes": true,
+          "diagnosticMode": "workspace",
+          "typeCheckingMode": "basic",
+          "extraPaths": [
+            "${workspaceFolder}/apps/api-python",
+            "${workspaceFolder}"
+          ]
+        }
+      }
+    },
+    "javascript": {
+      "enabled": true,
+      "server": "typescript-language-server",
+      "settings": {
+        "javascript": {
+          "validate": {
+            "enable": true
+          }
+        }
+      }
+    },
+    "rust": {
+      "enabled": true,
+      "server": "rust-analyzer",
+      "settings": {
+        "rust-analyzer": {
+          "checkOnSave": {
+            "command": "clippy"
+          },
+          "cargo": {
+            "loadOutDirsFromCheck": true
+          }
+        }
+      }
+    },
+    "html": {
+      "enabled": true
+    },
+    "css": {
+      "enabled": true
+    },
+    "yaml": {
+      "enabled": true,
+      "server": "yaml-language-server"
+    }
+  }
+}

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
 from db.domain.attendance import normalize_attendance_decision, normalize_attendance_event_type, normalize_attendance_reason
 from db.repositories.attendance import AttendanceRepository
 from db.schemas.attendance import AttendanceLogItem, AttendanceLogsResponse, AttendanceStatusResponse
+
+WITA_TZ = timezone(timedelta(hours=8))
 
 
 class AttendanceReadService:
@@ -43,3 +46,21 @@ class AttendanceReadService:
                 for log, person in rows
             ],
         )
+
+    async def logs_for_session_today(self, session_id, today_start: datetime, today_end: datetime) -> list[dict]:
+        rows = await self.attendance_repository.list_logs_for_session_today(session_id, today_start, today_end)
+        result = []
+        for log, person in rows:
+            result.append({
+                "id": str(log.id),
+                "student_id": person.student_id if person else None,
+                "full_name": person.full_name if person else None,
+                "class_code": person.class_group.class_code if person and person.class_group else None,
+                "decision": normalize_attendance_decision(log.decision, log.reason),
+                "reason": normalize_attendance_reason(log.reason),
+                "confidence": log.confidence,
+                "device_code": log.device_code,
+                "created_at": log.created_at,
+                "captured_image_url": f"/admin/attendance-logs/{log.id}/image" if log.captured_image_uri else None,
+            })
+        return result

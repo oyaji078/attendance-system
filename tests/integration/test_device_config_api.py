@@ -22,6 +22,7 @@ class FakeCache:
     def __init__(self) -> None:
         now = datetime.now(timezone.utc).isoformat()
         self.last = {"device_code": "gate-a01", "agent_version": "0.1.0", "queue_depth": 0, "captured_at": now, "seen_at": now}
+        self.device_configs: dict[str, dict] = {}
 
     async def set_device_heartbeat(self, device_code: str, queue_depth: int, agent_version: str, captured_at: datetime) -> None:
         self.last = {"device_code": device_code, "agent_version": agent_version, "queue_depth": queue_depth, "captured_at": captured_at.isoformat(), "seen_at": datetime.now(timezone.utc).isoformat()}
@@ -30,6 +31,24 @@ class FakeCache:
         payload = dict(self.last)
         payload["device_code"] = device_code
         return payload
+
+    async def get_device_config_cached(self, device_code: str) -> dict | None:
+        return self.device_configs.get(device_code)
+
+    async def set_device_config_cached(self, device_code: str, data: dict, ttl: int = 60) -> None:
+        self.device_configs[device_code] = data
+
+    async def invalidate_device_config_cached(self, device_code: str) -> None:
+        self.device_configs.pop(device_code, None)
+
+    async def invalidate_prefix(self, prefix: str) -> None:
+        pass
+
+    async def get_cached(self, key: str) -> dict | list | None:
+        return None
+
+    async def set_cached(self, key: str, data: dict | list, ttl: int) -> None:
+        pass
 
 
 class FakeSession:

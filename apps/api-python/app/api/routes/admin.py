@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date as date_type, datetime
+import logging
 import re
 from uuid import UUID
 
@@ -27,9 +28,23 @@ from services.attendance.session_service import AttendanceSessionConflictError, 
 from services.auth_service import admin_user_read
 from services.recognition.admin_service import AdminService, PersonConflictError
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(dependencies=[Depends(require_admin), Depends(csrf_dependency)])
 
 ALLOWED_USER_ROLES = {"admin", "lecturer"}
+
+
+async def _invalidate_persons_cache(container: AppContainer) -> None:
+    await container.cache.invalidate_prefix("persons:")
+
+
+async def _invalidate_lecturers_cache(container: AppContainer) -> None:
+    await container.cache.invalidate_prefix("lecturers:")
+
+
+async def _invalidate_classes_cache(container: AppContainer) -> None:
+    await container.cache.invalidate_prefix("classes:")
 
 
 def device_read(config: DeviceConfig, heartbeat: object | None = None) -> DeviceConfigRead:
@@ -180,6 +195,38 @@ def normalize_class_code(class_code: str | None) -> str:
     return value or "AUTO"
 
 
+async def _next_sequential_code(session: AsyncSession, model, column, prefix: str) -> str:
+    """Generate the next PREFIX-NNNN code by scanning existing values.
+
+    Used to auto-assign lecturer/class codes when the admin leaves them blank,
+    so the operator never has to invent identifiers by hand.
+    """
+    result = await session.execute(select(column).where(column.like(f"{prefix}-%")))
+    used: set[int] = set()
+    for value in result.scalars().all():
+        match = re.search(r"-(\d+)$", value or "")
+        if match:
+            used.add(int(match.group(1)))
+    candidate = 1
+    while candidate in used:
+        candidate += 1
+    return f"{prefix}-{candidate:04d}"
+
+
+async def resolve_lecturer_code(session: AsyncSession, provided: str | None) -> str:
+    cleaned = (provided or "").strip()
+    if cleaned:
+        return cleaned
+    return await _next_sequential_code(session, Lecturer, Lecturer.lecturer_code, "DSN")
+
+
+async def resolve_class_code(session: AsyncSession, provided: str | None) -> str:
+    cleaned = (provided or "").strip()
+    if cleaned:
+        return cleaned
+    return await _next_sequential_code(session, ClassGroup, ClassGroup.class_code, "KLS")
+
+
 @router.get("/admin/users", response_model=AdminUserListResponse)
 async def list_admin_users(
     limit: int = Query(default=25, ge=1, le=100),
@@ -284,14 +331,35 @@ async def reactivate_admin_user(admin_id: UUID, session: AsyncSession = Depends(
     return await read_admin_account(admin_id, session)
 
 
+async def _merge_fresh_heartbeats(container: AppContainer, items: list[DeviceConfigRead]) -> list[DeviceConfigRead]:
+    result: list[DeviceConfigRead] = []
+    for item in items:
+        try:
+            heartbeat_raw = await container.cache.get_device_heartbeat(item.device_code)
+        except Exception:
+            logger.warning("Failed to read heartbeat for device %s", item.device_code)
+            heartbeat_raw = None
+        result.append(device_read_from_cached(item.model_dump(mode="json"), heartbeat_raw))
+    return result
+
+
+def device_read_from_cached(data: dict, heartbeat: dict | None) -> DeviceConfigRead:
+    merged = {**data, "heartbeat": heartbeat}
+    return DeviceConfigRead(**merged)
+
+
 @router.get("/admin/devices/configs", response_model=list[DeviceConfigRead])
 async def list_device_configs(container: AppContainer = Depends(get_container), session: AsyncSession = Depends(get_session)) -> list[DeviceConfigRead]:
+    cached = await container.cache.get_cached("devices_configs")
+    if cached is not None:
+        items = [DeviceConfigRead(**item) for item in cached]
+        return await _merge_fresh_heartbeats(container, items)
     repository = DeviceConfigRepository(session)
     items: list[DeviceConfigRead] = []
     for config in await repository.list_all():
-        heartbeat = await container.cache.get_device_heartbeat(config.device_code)
-        items.append(device_read(config, heartbeat))
-    return items
+        items.append(device_read(config, None))
+    await container.cache.set_cached("devices_configs", [item.model_dump(mode="json") for item in items], 30)
+    return await _merge_fresh_heartbeats(container, items)
 
 
 @router.get("/admin/devices", response_model=DeviceConfigListResponse)
@@ -338,6 +406,9 @@ async def update_device_config(device_code: str, request: DeviceConfigWrite, con
     )
     await session.commit()
     await session.refresh(config)
+    await container.cache.invalidate_device_config_cached(device_code)
+    await container.cache.invalidate_prefix("devices_configs")
+    await container.cache.invalidate_prefix("devices:")
     heartbeat = await container.cache.get_device_heartbeat(device_code)
     return device_read(config, heartbeat)
 
@@ -357,8 +428,13 @@ async def rebuild_all_templates(service: AdminService = Depends(get_admin_servic
 
 
 @router.get("/admin/metrics", response_model=AdminMetricsResponse)
-async def admin_metrics(service: AdminService = Depends(get_admin_service)) -> AdminMetricsResponse:
-    return await service.metrics()
+async def admin_metrics(service: AdminService = Depends(get_admin_service), container: AppContainer = Depends(get_container)) -> AdminMetricsResponse:
+    cached = await container.cache.get_cached("metrics")
+    if cached is not None:
+        return AdminMetricsResponse(**cached)
+    result = await service.metrics()
+    await container.cache.set_cached("metrics", result.model_dump(mode="json"), 15)
+    return result
 
 
 @router.get("/admin/person/{student_id}", response_model=AdminPersonResponse)
@@ -374,21 +450,30 @@ async def list_persons(
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     service: AdminService = Depends(get_admin_service),
+    container: AppContainer = Depends(get_container),
 ) -> PersonListResponse:
+    cache_key = f"persons:{limit}:{offset}"
+    cached = await container.cache.get_cached(cache_key)
+    if cached is not None:
+        return PersonListResponse(**cached)
     items, total = await asyncio.gather(
         service.list_persons(limit=limit, offset=offset),
         service.count_persons(),
     )
-    return PersonListResponse(items=items, total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+    result = PersonListResponse(items=items, total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+    await container.cache.set_cached(cache_key, result.model_dump(mode="json"), 30)
+    return result
 
 
 @router.post("/admin/persons", response_model=PersonRead, status_code=status.HTTP_201_CREATED)
-async def create_person(request: PersonCreateRequest, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session)) -> PersonRead:
+async def create_person(request: PersonCreateRequest, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> PersonRead:
     try:
         payload = await service.create_person(request)
     except PersonConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_persons_cache(container)
     return payload
 
 
@@ -401,7 +486,7 @@ async def get_person(person_id: UUID, service: AdminService = Depends(get_admin_
 
 
 @router.put("/admin/persons/{person_id}", response_model=PersonRead)
-async def update_person(person_id: UUID, request: PersonUpdateRequest, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session)) -> PersonRead:
+async def update_person(person_id: UUID, request: PersonUpdateRequest, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> PersonRead:
     try:
         payload = await service.update_person(person_id, request)
     except LookupError as exc:
@@ -409,36 +494,44 @@ async def update_person(person_id: UUID, request: PersonUpdateRequest, service: 
     except PersonConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_persons_cache(container)
     return payload
 
 
 @router.patch("/admin/persons/{person_id}/deactivate", response_model=PersonRead)
-async def deactivate_person(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session)) -> PersonRead:
+async def deactivate_person(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> PersonRead:
     try:
         payload = await service.deactivate_person(person_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_persons_cache(container)
     return payload
 
 
 @router.patch("/admin/persons/{person_id}/reactivate", response_model=PersonRead)
-async def reactivate_person(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session)) -> PersonRead:
+async def reactivate_person(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> PersonRead:
     try:
         payload = await service.reactivate_person(person_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_persons_cache(container)
     return payload
 
 
 @router.delete("/admin/persons/{person_id}", response_model=AdminActionResponse)
-async def delete_person(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session)) -> AdminActionResponse:
+async def delete_person(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> AdminActionResponse:
     try:
         result = await service.delete_person(person_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mahasiswa tidak ditemukan.") from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_persons_cache(container)
     return AdminActionResponse(
         status="ok",
         detail=f"Mahasiswa dihapus dari daftar aktif. {result['templates_deactivated']} template wajah aktif dinonaktifkan.",
@@ -446,12 +539,14 @@ async def delete_person(person_id: UUID, service: AdminService = Depends(get_adm
 
 
 @router.delete("/admin/persons/{person_id}/face-data", response_model=AdminActionResponse)
-async def clear_person_face_data(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session)) -> AdminActionResponse:
+async def clear_person_face_data(person_id: UUID, service: AdminService = Depends(get_admin_service), session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> AdminActionResponse:
     try:
         result = await service.clear_person_face_data(person_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mahasiswa tidak ditemukan.") from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_persons_cache(container)
     return AdminActionResponse(
         status="ok",
         detail=(
@@ -509,18 +604,28 @@ async def list_lecturers(
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> LecturerListResponse:
+    cache_key = f"lecturers:{limit}:{offset}"
+    cached = await container.cache.get_cached(cache_key)
+    if cached is not None:
+        return LecturerListResponse(**cached)
     count_result = await session.execute(select(func.count(Lecturer.id)))
     total = int(count_result.scalar_one())
     result = await session.execute(
         select(Lecturer).order_by(Lecturer.created_at.desc(), Lecturer.lecturer_code.asc()).offset(offset).limit(limit)
     )
-    return LecturerListResponse(items=[lecturer_read(item) for item in result.scalars().all()], total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+    items = [lecturer_read(item) for item in result.scalars().all()]
+    response = LecturerListResponse(items=items, total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+    await container.cache.set_cached(cache_key, response.model_dump(mode="json"), 60)
+    return response
 
 
 @router.post("/admin/lecturers", response_model=LecturerRead, status_code=status.HTTP_201_CREATED)
-async def create_lecturer(request: LecturerWrite, session: AsyncSession = Depends(get_session)) -> LecturerRead:
-    lecturer = Lecturer(**request.model_dump())
+async def create_lecturer(request: LecturerWrite, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> LecturerRead:
+    payload = request.model_dump()
+    payload["lecturer_code"] = await resolve_lecturer_code(session, payload.get("lecturer_code"))
+    lecturer = Lecturer(**payload)
     session.add(lecturer)
     try:
         await session.commit()
@@ -528,40 +633,52 @@ async def create_lecturer(request: LecturerWrite, session: AsyncSession = Depend
         await session.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Kode dosen sudah digunakan.") from exc
     await session.refresh(lecturer)
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_lecturers_cache(container)
     return lecturer_read(lecturer)
 
 
 @router.put("/admin/lecturers/{lecturer_id}", response_model=LecturerRead)
-async def update_lecturer(lecturer_id: UUID, request: LecturerWrite, session: AsyncSession = Depends(get_session)) -> LecturerRead:
+async def update_lecturer(lecturer_id: UUID, request: LecturerWrite, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> LecturerRead:
     lecturer = await session.get(Lecturer, lecturer_id)
     if lecturer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dosen tidak ditemukan.")
-    for key, value in request.model_dump().items():
+    payload = request.model_dump()
+    # A blank code on update keeps the existing one instead of nulling it.
+    if not (payload.get("lecturer_code") or "").strip():
+        payload["lecturer_code"] = lecturer.lecturer_code
+    for key, value in payload.items():
         setattr(lecturer, key, value)
     await session.commit()
     await session.refresh(lecturer)
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_lecturers_cache(container)
     return lecturer_read(lecturer)
 
 
 @router.patch("/admin/lecturers/{lecturer_id}/deactivate", response_model=LecturerRead)
-async def deactivate_lecturer(lecturer_id: UUID, session: AsyncSession = Depends(get_session)) -> LecturerRead:
+async def deactivate_lecturer(lecturer_id: UUID, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> LecturerRead:
     lecturer = await session.get(Lecturer, lecturer_id)
     if lecturer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dosen tidak ditemukan.")
     lecturer.is_active = False
     await session.commit()
     await session.refresh(lecturer)
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_lecturers_cache(container)
     return lecturer_read(lecturer)
 
 
 @router.patch("/admin/lecturers/{lecturer_id}/reactivate", response_model=LecturerRead)
-async def reactivate_lecturer(lecturer_id: UUID, session: AsyncSession = Depends(get_session)) -> LecturerRead:
+async def reactivate_lecturer(lecturer_id: UUID, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> LecturerRead:
     lecturer = await session.get(Lecturer, lecturer_id)
     if lecturer is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Dosen tidak ditemukan.")
     lecturer.is_active = True
     await session.commit()
     await session.refresh(lecturer)
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_lecturers_cache(container)
     return lecturer_read(lecturer)
 
 
@@ -570,7 +687,12 @@ async def list_classes(
     limit: int = Query(default=25, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> ClassListResponse:
+    cache_key = f"classes:{limit}:{offset}"
+    cached = await container.cache.get_cached(cache_key)
+    if cached is not None:
+        return ClassListResponse(**cached)
     count_result = await session.execute(select(func.count(ClassGroup.id)))
     total = int(count_result.scalar_one())
     result = await session.execute(
@@ -582,12 +704,17 @@ async def list_classes(
         .offset(offset)
         .limit(limit)
     )
-    return ClassListResponse(items=[class_read(row) for row in result.all()], total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+    items = [class_read(row) for row in result.all()]
+    response = ClassListResponse(items=items, total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+    await container.cache.set_cached(cache_key, response.model_dump(mode="json"), 60)
+    return response
 
 
 @router.post("/admin/classes", response_model=ClassRead, status_code=status.HTTP_201_CREATED)
-async def create_class(request: ClassWrite, session: AsyncSession = Depends(get_session)) -> ClassRead:
-    class_group = ClassGroup(**request.model_dump())
+async def create_class(request: ClassWrite, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> ClassRead:
+    payload = request.model_dump()
+    payload["class_code"] = await resolve_class_code(session, payload.get("class_code"))
+    class_group = ClassGroup(**payload)
     session.add(class_group)
     try:
         await session.commit()
@@ -599,15 +726,21 @@ async def create_class(request: ClassWrite, session: AsyncSession = Depends(get_
     if class_group.lecturer_id:
         lecturer = await session.get(Lecturer, class_group.lecturer_id)
         lecturer_name = lecturer.full_name if lecturer else None
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_classes_cache(container)
     return class_read((class_group, lecturer_name, 0))
 
 
 @router.put("/admin/classes/{class_id}", response_model=ClassRead)
-async def update_class(class_id: UUID, request: ClassWrite, session: AsyncSession = Depends(get_session)) -> ClassRead:
+async def update_class(class_id: UUID, request: ClassWrite, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> ClassRead:
     class_group = await session.get(ClassGroup, class_id)
     if class_group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kelas tidak ditemukan.")
-    for key, value in request.model_dump().items():
+    payload = request.model_dump()
+    # A blank code on update keeps the existing one instead of nulling it.
+    if not (payload.get("class_code") or "").strip():
+        payload["class_code"] = class_group.class_code
+    for key, value in payload.items():
         setattr(class_group, key, value)
     await session.commit()
     result = await session.execute(
@@ -617,11 +750,13 @@ async def update_class(class_id: UUID, request: ClassWrite, session: AsyncSessio
         .where(ClassGroup.id == class_id)
         .group_by(ClassGroup.id, Lecturer.full_name)
     )
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_classes_cache(container)
     return class_read(result.one())
 
 
 @router.patch("/admin/classes/{class_id}/deactivate", response_model=ClassRead)
-async def deactivate_class(class_id: UUID, session: AsyncSession = Depends(get_session)) -> ClassRead:
+async def deactivate_class(class_id: UUID, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> ClassRead:
     class_group = await session.get(ClassGroup, class_id)
     if class_group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kelas tidak ditemukan.")
@@ -634,11 +769,13 @@ async def deactivate_class(class_id: UUID, session: AsyncSession = Depends(get_s
         .where(ClassGroup.id == class_id)
         .group_by(ClassGroup.id, Lecturer.full_name)
     )
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_classes_cache(container)
     return class_read(result.one())
 
 
 @router.patch("/admin/classes/{class_id}/reactivate", response_model=ClassRead)
-async def reactivate_class(class_id: UUID, session: AsyncSession = Depends(get_session)) -> ClassRead:
+async def reactivate_class(class_id: UUID, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> ClassRead:
     class_group = await session.get(ClassGroup, class_id)
     if class_group is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kelas tidak ditemukan.")
@@ -651,12 +788,20 @@ async def reactivate_class(class_id: UUID, session: AsyncSession = Depends(get_s
         .where(ClassGroup.id == class_id)
         .group_by(ClassGroup.id, Lecturer.full_name)
     )
+    await container.cache.invalidate_cached("metrics")
+    await _invalidate_classes_cache(container)
     return class_read(result.one())
+
+
+WITA_DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
 def session_date_matches(item: AttendanceSessionRead, selected_date: date_type | None) -> bool:
     if selected_date is None:
         return True
+    if item.repeat_days is not None:
+        day_name = WITA_DAY_NAMES[selected_date.weekday()]
+        return day_name in item.repeat_days
     values = [value for value in (item.starts_at, item.ends_at) if value is not None]
     if not values:
         return True
@@ -697,12 +842,14 @@ async def create_attendance_session(
     request: AttendanceSessionCreateRequest,
     service: AttendanceSessionService = Depends(get_attendance_session_service),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> AttendanceSessionRead:
     try:
         payload = await service.create_session(request)
     except AttendanceSessionConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     return payload
 
 
@@ -725,6 +872,7 @@ async def update_attendance_session(
     request: AttendanceSessionUpdateRequest,
     service: AttendanceSessionService = Depends(get_attendance_session_service),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> AttendanceSessionRead:
     try:
         payload = await service.update_session(session_id, request)
@@ -733,6 +881,7 @@ async def update_attendance_session(
     except AttendanceSessionConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     return payload
 
 
@@ -741,12 +890,14 @@ async def activate_attendance_session(
     session_id: UUID,
     service: AttendanceSessionService = Depends(get_attendance_session_service),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> AttendanceSessionRead:
     try:
         payload = await service.activate_session(session_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     return payload
 
 
@@ -755,12 +906,14 @@ async def close_attendance_session(
     session_id: UUID,
     service: AttendanceSessionService = Depends(get_attendance_session_service),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> AttendanceSessionRead:
     try:
         payload = await service.close_session(session_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     return payload
 
 
@@ -769,12 +922,14 @@ async def deactivate_attendance_session(
     session_id: UUID,
     service: AttendanceSessionService = Depends(get_attendance_session_service),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> AttendanceSessionRead:
     try:
         payload = await service.deactivate_session(session_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     return payload
 
 
@@ -783,12 +938,14 @@ async def delete_attendance_session(
     session_id: UUID,
     service: AttendanceSessionService = Depends(get_attendance_session_service),
     session: AsyncSession = Depends(get_session),
+    container: AppContainer = Depends(get_container),
 ) -> AdminActionResponse:
     try:
         result = await service.delete_session(session_id)
     except LookupError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sesi absensi tidak ditemukan.") from exc
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     if result["status"] == "archived":
         return AdminActionResponse(status="ok", detail="Sesi diarsipkan. Riwayat absensi tidak akan hilang.")
     return AdminActionResponse(status="ok", detail="Sesi dihapus karena belum memiliki riwayat absensi.")
@@ -821,7 +978,7 @@ async def list_attendance_logs(
 
 
 @router.patch("/admin/attendance-logs/{log_id}", response_model=AttendanceLogAdminRead)
-async def update_attendance_log(log_id: UUID, request: AttendanceLogUpdateRequest, session: AsyncSession = Depends(get_session)) -> AttendanceLogAdminRead:
+async def update_attendance_log(log_id: UUID, request: AttendanceLogUpdateRequest, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> AttendanceLogAdminRead:
     log = await session.get(AttendanceLog, log_id)
     if log is None or log.is_deleted:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Log absensi tidak ditemukan.")
@@ -836,16 +993,18 @@ async def update_attendance_log(log_id: UUID, request: AttendanceLogUpdateReques
         .where(AttendanceLog.id == log_id)
     )
     row = result.one()
+    await container.cache.invalidate_cached("metrics")
     return attendance_log_admin_read(row, 1)
 
 
 @router.patch("/admin/attendance-logs/{log_id}/deactivate", response_model=AdminActionResponse)
-async def deactivate_attendance_log(log_id: UUID, session: AsyncSession = Depends(get_session)) -> AdminActionResponse:
+async def deactivate_attendance_log(log_id: UUID, session: AsyncSession = Depends(get_session), container: AppContainer = Depends(get_container)) -> AdminActionResponse:
     log = await session.get(AttendanceLog, log_id)
     if log is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Log absensi tidak ditemukan.")
     log.is_deleted = True
     await session.commit()
+    await container.cache.invalidate_cached("metrics")
     return AdminActionResponse(status="ok", detail="Log absensi dinonaktifkan.")
 
 

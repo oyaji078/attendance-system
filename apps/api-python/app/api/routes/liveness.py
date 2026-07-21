@@ -17,7 +17,8 @@ LOGGER = logging.getLogger(__name__)
 def get_challenge_service(request: Request) -> ColorChallengeService:
     container = get_container(request)
     if not hasattr(container, "challenge_service") or container.challenge_service is None:
-        container.challenge_service = ColorChallengeService()
+        cache = getattr(container, "cache", None)
+        container.challenge_service = ColorChallengeService(cache=cache)
     return container.challenge_service
 
 
@@ -28,7 +29,7 @@ async def request_challenge(
     _: None = Depends(rate_limit_ml_dependency),
 ) -> ChallengeResponse:
     try:
-        challenge = service.generate(body.device_code)
+        challenge = await service.generate(body.device_code)
         return ChallengeResponse(
             challenge_id=challenge.challenge_id,
             color_key=challenge.color_key,
@@ -48,7 +49,7 @@ async def verify_challenge(
     _: None = Depends(rate_limit_ml_dependency),
 ) -> ChallengeVerifyResponse:
     try:
-        result = service.verify(body.challenge_id, body.frame_b64)
+        result = await service.verify(body.challenge_id, body.frame_b64)
         return ChallengeVerifyResponse(
             challenge_id=body.challenge_id,
             passed=result.passed,

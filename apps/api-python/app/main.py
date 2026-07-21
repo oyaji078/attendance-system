@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 from time import perf_counter
 
 from fastapi import FastAPI, status
@@ -75,7 +76,7 @@ app = FastAPI(title="Campus Face Recognition Attendance System", lifespan=lifesp
 _app_settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_app_settings.cors_origins,
+    allow_origins=_app_settings.effective_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-CSRF-Token", "x-csrf-token"],
@@ -114,3 +115,15 @@ async def validation_exception_handler(_request, exc: RequestValidationError) ->
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# Optionally serve the static kiosk UI from the API itself so a single HTTPS
+# tunnel (or reverse proxy) exposes both the page and its API on one origin.
+# This keeps camera access (getUserMedia needs a secure context off localhost)
+# and admin cookies working without cross-origin CORS/SameSite juggling.
+# API routes above are matched first; this mount only catches everything else.
+_KIOSK_DIR = Path(__file__).resolve().parents[3] / "apps" / "kiosk-ui" / "src"
+if _KIOSK_DIR.is_dir():
+    from fastapi.staticfiles import StaticFiles
+
+    app.mount("/", StaticFiles(directory=str(_KIOSK_DIR), html=True), name="kiosk")

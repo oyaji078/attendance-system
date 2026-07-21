@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time, timedelta
 from uuid import UUID
 
 from db.domain.attendance import normalize_session_kind
 from db.repositories.attendance import AttendanceRepository, AttendanceSessionProjection
 from db.schemas.attendance_sessions import AttendanceSessionCreateRequest, AttendanceSessionRead, AttendanceSessionUpdateRequest, ResolvedAttendanceSession
+
+WITA_TZ = timezone(timedelta(hours=8))
+WITA_DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
 class AttendanceSessionConflictError(ValueError):
@@ -42,6 +45,10 @@ class AttendanceSessionService:
                 starts_at=request.starts_at,
                 ends_at=request.ends_at,
                 is_active=request.is_active,
+                repeat_days=request.repeat_days,
+                start_time=request.start_time,
+                end_time=request.end_time,
+                tz=request.timezone,
             )
         except ValueError as exc:
             raise AttendanceSessionConflictError(str(exc)) from exc
@@ -67,6 +74,10 @@ class AttendanceSessionService:
                 starts_at=request.starts_at,
                 ends_at=request.ends_at,
                 is_active=request.is_active,
+                repeat_days=request.repeat_days,
+                start_time=request.start_time,
+                end_time=request.end_time,
+                tz=request.timezone,
             )
         except ValueError as exc:
             raise AttendanceSessionConflictError(str(exc)) from exc
@@ -147,6 +158,10 @@ class AttendanceSessionService:
             cooldown_seconds=projection.session.cooldown_seconds,
             starts_at=projection.session.starts_at,
             ends_at=projection.session.ends_at,
+            repeat_days=projection.session.repeat_days,
+            start_time=projection.session.start_time,
+            end_time=projection.session.end_time,
+            timezone=projection.session.timezone or "Asia/Makassar",
             total_logs=projection.total_logs,
             recognized=projection.recognized,
             cooldown=projection.cooldown,
@@ -175,6 +190,17 @@ class AttendanceSessionService:
     def _is_currently_available(item: AttendanceSessionRead, now: datetime) -> bool:
         if not item.is_active:
             return False
+        if item.repeat_days is not None and item.start_time is not None:
+            now_wita = AttendanceSessionService._as_utc(now).astimezone(WITA_TZ)
+            today_wita = WITA_DAY_NAMES[now_wita.weekday()]
+            current_time_wita = now_wita.time()
+            if today_wita not in item.repeat_days:
+                return False
+            if item.start_time is not None and current_time_wita < item.start_time:
+                return False
+            if item.end_time is not None and current_time_wita > item.end_time:
+                return False
+            return True
         starts_at = AttendanceSessionService._as_utc(item.starts_at)
         ends_at = AttendanceSessionService._as_utc(item.ends_at)
         if starts_at is not None and starts_at > now:

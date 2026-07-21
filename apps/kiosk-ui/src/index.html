@@ -11,7 +11,7 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">Kehadiran Kampus</p>
-          <h1>OYAJI ATTANDANCE</h1>
+          <h1> Hikam ATTANDANCE</h1>
         </div>
         <div class="topbar-actions">
           <span id="auto-status" class="status-pill idle">Kamera dimulai</span>
@@ -139,40 +139,26 @@
             </div>
             <dl class="attendance-confirm-facts">
               <div><dt>Nama</dt><dd id="confirm-name">-</dd></div>
-              <div><dt>ID Mahasiswa</dt><dd id="confirm-student-id">-</dd></div>
-              <div><dt>Email</dt><dd id="confirm-email">-</dd></div>
               <div><dt>Kelas</dt><dd id="confirm-class">-</dd></div>
-              <div><dt>Dosen</dt><dd id="confirm-lecturer">-</dd></div>
               <div><dt>Sesi</dt><dd id="confirm-session">-</dd></div>
-              <div><dt>Kode sesi</dt><dd id="confirm-session-code">-</dd></div>
-              <div><dt>Tanggal</dt><dd id="confirm-date">-</dd></div>
-              <div><dt>Waktu</dt><dd id="confirm-time">-</dd></div>
-              <div><dt>Confidence</dt><dd id="confirm-confidence">-</dd></div>
+              <div><dt>Waktu (WITA)</dt><dd id="confirm-time">-</dd></div>
             </dl>
           </div>
-          <p id="attendance-confirm-message" class="attendance-confirm-message">Pastikan data sudah benar.</p>
+          <p id="attendance-confirm-message" class="attendance-confirm-message">Pastikan data sudah benar sebelum menekan Benar.</p>
           <div class="attendance-confirm-actions">
             <button id="attendance-confirm-accept" type="button">Benar</button>
-            <button id="attendance-confirm-retry" class="secondary" type="button">Ulang</button>
+            <button id="attendance-confirm-retry" class="secondary" type="button">Ulangi</button>
+            <button id="attendance-confirm-cancel" class="tertiary" type="button">Batal</button>
           </div>
         </section>
       </div>
 
       <section id="enrollment-panel" class="enrollment-layout is-hidden">
         <section id="camera-stage" class="camera-stage" data-guide-tone="idle">
-          <div class="stage-header">
-            <div>
-              <p id="current-step-label" class="eyebrow">Hadap Depan 0/0</p>
-              <h2 id="current-pose-title">Posisikan wajah di tengah</h2>
-            </div>
-            <div class="stage-actions">
-              <span id="capture-status-badge" class="status-pill idle">Siap</span>
-              <button id="cancel-enrollment" class="secondary compact" type="button" disabled>Batal</button>
-            </div>
-          </div>
 
           <div class="video-frame">
             <video id="camera" autoplay muted playsinline></video>
+
             <div class="guide-layer" aria-hidden="true">
               <div id="face-oval" class="face-oval">
                 <div id="oval-progress" class="oval-progress"></div>
@@ -181,13 +167,14 @@
                   <span id="oval-secondary">Ikuti panduan</span>
                 </div>
               </div>
-              <div class="center-line horizontal"></div>
-              <div class="center-line vertical"></div>
+
               <span id="arrow-left" class="direction-arrow arrow-left">&lt;</span>
               <span id="arrow-right" class="direction-arrow arrow-right">&gt;</span>
               <span id="arrow-up" class="direction-arrow arrow-up">^</span>
               <span id="arrow-down" class="direction-arrow arrow-down">v</span>
+
               <div id="success-burst" class="success-burst">&#10003;</div>
+
               <div id="challenge-overlay" class="challenge-overlay is-hidden">
                 <div class="challenge-swatch" id="challenge-swatch"></div>
                 <div class="challenge-instruction">
@@ -196,37 +183,24 @@
                 </div>
               </div>
             </div>
-            <div class="instruction-banner">
-              <p id="live-instruction">Kamera dimulai</p>
-              <span id="countdown-label"></span>
+
+            <div id="enroll-top-bar" class="enroll-top-bar">
+              <span id="enroll-status-dot" class="enroll-status-dot"></span>
+              <span id="enroll-student-name" class="enroll-student-name"></span>
+              <button id="cancel-enrollment" class="enroll-cancel-btn" type="button" disabled>&times;</button>
             </div>
-            <div id="capture-overlay" class="capture-overlay idle">Kamera dimulai</div>
+
+            <p id="enroll-instruction" class="enroll-instruction">Posisikan wajah di dalam lingkaran</p>
+
+            <div id="pose-dots" class="pose-dots" aria-label="Progres pose"></div>
+
+            <div id="enroll-bottom-sheet" class="enroll-bottom-sheet is-hidden">
+              <p id="enroll-warning" class="enroll-warning"></p>
+              <p id="enroll-countdown" class="enroll-countdown"></p>
+            </div>
           </div>
 
-          <section class="progress-panel capture-progress" aria-live="polite">
-            <div class="progress-copy">
-              <span>Progres</span>
-              <span id="speed-label">Mode perekaman</span>
-              <strong id="progress-label">0%</strong>
-            </div>
-            <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-            <div id="pose-grid" class="pose-grid"></div>
-          </section>
-
-          <p id="current-pose-instruction" class="pose-instruction">
-            Mulai pendaftaran, lalu posisikan wajah di dalam oval.
-          </p>
-          <p id="ui-hint" class="ui-hint neutral">Ikuti panduan di layar.</p>
-
-          <details class="manual-panel">
-            <summary>Lanjutan / Rekam Manual</summary>
-            <div class="manual-actions">
-              <button id="capture-pose" type="button" disabled>Rekam Gambar</button>
-              <button id="finish-enrollment" type="button" disabled>Selesaikan Pendaftaran</button>
-            </div>
-          </details>
-
-          <details class="debug-panel">
+          <details class="admin-panel-hidden">
             <summary>Diagnostik</summary>
             <div class="debug-stack">
               <div>
@@ -243,6 +217,10 @@
                 </dl>
               </div>
               <pre id="result">siap</pre>
+              <div class="manual-actions">
+                <button id="capture-pose" type="button" disabled>Rekam Manual</button>
+                <button id="finish-enrollment" type="button" disabled>Selesaikan</button>
+              </div>
             </div>
           </details>
         </section>
@@ -303,6 +281,30 @@
             <summary>Diagnostik absensi</summary>
             <pre id="recognition-result">siap</pre>
           </details>
+        </div>
+
+        <div id="attendance-top-bar" class="attendance-top-bar is-hidden">
+          <div class="attendance-top-bar-left">
+            <span id="attendance-session-badge" class="attendance-session-badge"></span>
+            <button id="attendance-change-session-btn" class="attendance-change-session-btn is-hidden" type="button" aria-label="Ganti Kelas/Sesi" title="Ganti Kelas/Sesi">Ganti Kelas/Sesi</button>
+          </div>
+          <div class="attendance-top-bar-right">
+            <button id="attendance-close-btn" class="attendance-close-btn" type="button" aria-label="Tutup Absensi" title="Tutup Absensi">Tutup Absensi</button>
+          </div>
+        </div>
+
+        <div id="attendance-toast" class="attendance-toast is-hidden" role="status" aria-live="polite">
+          <span id="attendance-toast-icon" class="attendance-toast-icon"></span>
+          <span id="attendance-toast-text" class="attendance-toast-text"></span>
+        </div>
+
+        <div id="attendance-edge-sheet" class="attendance-edge-sheet is-hidden" role="dialog" aria-modal="true">
+          <div class="attendance-edge-backdrop"></div>
+          <div class="attendance-edge-content">
+            <h3 id="attendance-edge-title"></h3>
+            <p id="attendance-edge-message"></p>
+            <div id="attendance-edge-actions" class="attendance-edge-actions"></div>
+          </div>
         </div>
       </section>
 

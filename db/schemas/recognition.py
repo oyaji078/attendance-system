@@ -94,6 +94,7 @@ class RecognitionResponse(BaseModel):
     quality_summary: QualitySummary | None = None
     active_liveness_score: float | None = None
     active_liveness_passed: bool | None = None
+    pending_attendance_token: str | None = None
 
     @model_validator(mode="before")
     @classmethod

@@ -26,6 +26,7 @@ class MultiFrameDecisionEngine:
         cooldown_seconds: int,
         similarity_threshold: float | None = None,
         candidate_margin_threshold: float | None = None,
+        apply_cooldown: bool = True,
     ) -> tuple[RecognitionResponse, UUID | None, UUID | None]:
         successful = [item for item in frame_decisions if item.matched_person_id is not None]
         counts = Counter(item.matched_person_id for item in successful)
@@ -114,7 +115,11 @@ class MultiFrameDecisionEngine:
             class_name=top_candidates[0].class_name if top_candidates else None,
             template_id=reference_frame.matched_template_id,
         )
-        if request.session_code and reference_frame.matched_person_id:
+        # The preview step (apply_cooldown=False) must not read OR write the
+        # cooldown: it only shows "is this you?" before the user confirms.
+        # Setting the cooldown here would block the very confirm it precedes,
+        # making attendance impossible. Cooldown is owned by confirm/checkin.
+        if apply_cooldown and request.session_code and reference_frame.matched_person_id:
             cooldown_remaining_seconds = await self.cache.cooldown_ttl_seconds(request.session_code, reference_frame.matched_person_id)
             if cooldown_remaining_seconds is not None and cooldown_remaining_seconds > 0:
                 return (
@@ -135,8 +140,31 @@ class MultiFrameDecisionEngine:
                     reference_frame.matched_person_id,
                     reference_frame.matched_template_id,
                 )
-        if request.session_code:
-            await self.cache.set_cooldown(request.session_code, reference_frame.matched_person_id, cooldown_seconds)
+        if apply_cooldown and request.session_code:
+            # SET NX: under concurrent requests only one caller can start the
+            # cooldown; the loser is reported as on-cooldown instead of both
+            # being accepted (check-then-set race).
+            acquired = await self.cache.acquire_cooldown(request.session_code, reference_frame.matched_person_id, cooldown_seconds)
+            if not acquired:
+                cooldown_remaining_seconds = await self.cache.cooldown_ttl_seconds(request.session_code, reference_frame.matched_person_id)
+                return (
+                    RecognitionResponse(
+                        decision="rejected",
+                        reason="cooldown",
+                        recognition_status="cooldown",
+                        confirmed_frames=confirmed_frames,
+                        device_code=request.device_code,
+                        session_code=request.session_code,
+                        person=person,
+                        confidence=confidence,
+                        top_candidates=top_candidates,
+                        cooldown_remaining_seconds=cooldown_remaining_seconds,
+                        quality_summary=quality_summary,
+                        **diagnostics,
+                    ),
+                    reference_frame.matched_person_id,
+                    reference_frame.matched_template_id,
+                )
         await self.cache.set_recent_match(
             request.device_code,
             {"student_id": person.student_id, "person_id": str(person.person_id), "confidence": confidence},
@@ -152,7 +180,7 @@ class MultiFrameDecisionEngine:
                 person=person,
                 confidence=confidence,
                 top_candidates=top_candidates,
-                cooldown_remaining_seconds=cooldown_seconds if request.session_code else None,
+                cooldown_remaining_seconds=(cooldown_seconds if (apply_cooldown and request.session_code) else None),
                 quality_summary=quality_summary,
                 **diagnostics,
             ),

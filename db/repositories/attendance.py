@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time
 from uuid import UUID
 
 from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, joinedload
 
 from db.domain.attendance import (
     ATTENDANCE_SUCCESS_DECISIONS,
@@ -17,6 +17,9 @@ from db.domain.attendance import (
     normalize_session_kind,
 )
 from db.models.entities import AttendanceLog, AttendanceSession, ClassGroup, Lecturer, Person
+
+WITA_TZ = timezone(timedelta(hours=8))
+WITA_DAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
 @dataclass(slots=True)
@@ -78,11 +81,50 @@ class AttendanceRepository:
 
     @staticmethod
     def _session_available_filter(now: datetime):
+        now_wita = AttendanceRepository._as_utc(now).astimezone(WITA_TZ)
+        today_wita = WITA_DAY_NAMES[now_wita.weekday()]
+        current_time_wita = now_wita.time()
         return (
             AttendanceSession.is_deleted.is_(False),
             AttendanceSession.is_active.is_(True),
-            or_(AttendanceSession.starts_at.is_(None), AttendanceSession.starts_at <= now),
-            or_(AttendanceSession.ends_at.is_(None), AttendanceSession.ends_at >= now),
+            or_(
+                AttendanceSession.repeat_days.is_(None),
+                AttendanceSession.repeat_days.contains([today_wita]),
+            ),
+            or_(
+                AttendanceSession.start_time.is_(None),
+                AttendanceSession.start_time <= current_time_wita,
+            ),
+            or_(
+                AttendanceSession.end_time.is_(None),
+                AttendanceSession.end_time >= current_time_wita,
+            ),
+            or_(
+                and_(
+                    AttendanceSession.repeat_days.is_not(None),
+                    AttendanceSession.start_time.is_not(None),
+                ),
+                and_(
+                    AttendanceSession.starts_at.is_(None),
+                    AttendanceSession.ends_at.is_(None),
+                ),
+                and_(
+                    AttendanceSession.starts_at.is_(None),
+                    AttendanceSession.ends_at.is_not(None),
+                    AttendanceSession.ends_at >= now,
+                ),
+                and_(
+                    AttendanceSession.starts_at.is_not(None),
+                    AttendanceSession.ends_at.is_(None),
+                    AttendanceSession.starts_at <= now,
+                ),
+                and_(
+                    AttendanceSession.starts_at.is_not(None),
+                    AttendanceSession.ends_at.is_not(None),
+                    AttendanceSession.starts_at <= now,
+                    AttendanceSession.ends_at >= now,
+                ),
+            ),
         )
 
     async def get_session(self, session_code: str, *, include_deleted: bool = False) -> AttendanceSession | None:
@@ -135,6 +177,10 @@ class AttendanceRepository:
         starts_at: datetime | None,
         ends_at: datetime | None,
         is_active: bool,
+        repeat_days: list[str] | None = None,
+        start_time: time | None = None,
+        end_time: time | None = None,
+        tz: str | None = "Asia/Makassar",
     ) -> AttendanceSession:
         await self._ensure_session_code_available(session_code)
         session = AttendanceSession(
@@ -148,6 +194,10 @@ class AttendanceRepository:
             starts_at=starts_at,
             ends_at=ends_at,
             is_active=is_active,
+            repeat_days=repeat_days,
+            start_time=start_time,
+            end_time=end_time,
+            timezone=tz,
         )
         self.session.add(session)
         await self.session.flush()
@@ -166,6 +216,10 @@ class AttendanceRepository:
         starts_at: datetime | None,
         ends_at: datetime | None,
         is_active: bool,
+        repeat_days: list[str] | None = None,
+        start_time: time | None = None,
+        end_time: time | None = None,
+        tz: str | None = "Asia/Makassar",
     ) -> AttendanceSession:
         session = await self.get_session_by_id(session_id)
         if session is None:
@@ -181,6 +235,10 @@ class AttendanceRepository:
         session.starts_at = starts_at
         session.ends_at = ends_at
         session.is_active = is_active
+        session.repeat_days = repeat_days
+        session.start_time = start_time
+        session.end_time = end_time
+        session.timezone = tz
         await self.session.flush()
         return session
 
@@ -236,6 +294,31 @@ class AttendanceRepository:
         await self.session.flush()
         return log
 
+    async def has_accepted_log_in_window(
+        self,
+        session_id: UUID,
+        person_id: UUID,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> bool:
+        # Prevents the same person from confirming the same session more than
+        # once inside a day-shaped window. Uses the accepted decision set so
+        # rejection rows do not block re-attempts after a bad scan.
+        accepted = list(ATTENDANCE_SUCCESS_DECISIONS)
+        result = await self.session.execute(
+            select(func.count(AttendanceLog.id))
+            .where(
+                AttendanceLog.session_id == session_id,
+                AttendanceLog.person_id == person_id,
+                AttendanceLog.decision.in_(accepted),
+                AttendanceLog.is_deleted.is_(False),
+                AttendanceLog.created_at >= window_start,
+                AttendanceLog.created_at < window_end,
+            )
+        )
+        count = result.scalar_one_or_none() or 0
+        return int(count) > 0
+
     async def clear_matched_templates_for_person(self, person_id: UUID) -> int:
         result = await self.session.execute(
             update(AttendanceLog)
@@ -272,6 +355,23 @@ class AttendanceRepository:
         )
         return list(result.all())
 
+    async def list_logs_for_session_today(self, session_id, today_start: datetime, today_end: datetime) -> list[tuple[AttendanceLog, Person | None]]:
+        result = await self.session.execute(
+            select(AttendanceLog, Person)
+            .outerjoin(Person, Person.id == AttendanceLog.person_id)
+            # Eager-load class_group: the read service touches person.class_group
+            # and lazy loading would fail inside the async session.
+            .options(joinedload(Person.class_group))
+            .where(
+                AttendanceLog.session_id == session_id,
+                AttendanceLog.is_deleted.is_(False),
+                AttendanceLog.created_at >= today_start,
+                AttendanceLog.created_at < today_end,
+            )
+            .order_by(AttendanceLog.created_at.asc())
+        )
+        return list(result.all())
+
     async def metrics(self) -> dict[str, int]:
         window_start = datetime.now(timezone.utc) - timedelta(hours=24)
         total_logs = await self.session.execute(select(func.count(AttendanceLog.id)))
@@ -295,10 +395,21 @@ class AttendanceRepository:
             return "attendance_session_deleted"
         if not session.is_active:
             return "attendance_session_inactive"
-        if starts_at is not None and timestamp < starts_at:
-            return "attendance_session_not_started"
-        if ends_at is not None and timestamp > ends_at:
-            return "attendance_session_ended"
+        if session.repeat_days is not None and session.start_time is not None:
+            now_wita = timestamp.astimezone(WITA_TZ)
+            today_wita = WITA_DAY_NAMES[now_wita.weekday()]
+            current_time_wita = now_wita.time()
+            if today_wita not in session.repeat_days:
+                return "attendance_session_not_scheduled_today"
+            if session.start_time is not None and current_time_wita < session.start_time:
+                return "attendance_session_not_started"
+            if session.end_time is not None and current_time_wita > session.end_time:
+                return "attendance_session_ended"
+        else:
+            if starts_at is not None and timestamp < starts_at:
+                return "attendance_session_not_started"
+            if ends_at is not None and timestamp > ends_at:
+                return "attendance_session_ended"
         return None
 
     async def _ensure_session_code_available(self, session_code: str, exclude_session_id: UUID | None = None) -> None:
@@ -313,7 +424,11 @@ class AttendanceRepository:
         return await self.get_session(session_code, include_deleted=True) is not None
 
     @staticmethod
-    def _as_utc(value: datetime) -> datetime:
+    def _as_utc(value: datetime | None) -> datetime | None:
+        # None-safe: recurring sessions keep starts_at/ends_at NULL and rely on
+        # repeat_days/start_time instead; availability_reason must not crash.
+        if value is None:
+            return None
         if value.tzinfo is None:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)

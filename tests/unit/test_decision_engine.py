@@ -20,6 +20,12 @@ class FakeCache:
     async def set_cooldown(self, session_code, person_id, seconds) -> None:
         self.cooldowns[(session_code, person_id)] = seconds
 
+    async def acquire_cooldown(self, session_code, person_id, seconds) -> bool:
+        if (session_code, person_id) in self.cooldowns:
+            return False
+        self.cooldowns[(session_code, person_id)] = seconds
+        return True
+
     async def set_recent_match(self, device_code, payload) -> None:
         self.recent_matches.append((device_code, payload))
 
@@ -102,6 +108,51 @@ def test_decision_engine_recognizes_and_sets_cooldown() -> None:
     assert cache.cooldowns[("morning-gate", person_id)] == 30
 
 
+def test_decision_engine_preview_does_not_set_cooldown() -> None:
+    """Regression: the preview step (apply_cooldown=False) must recognize the
+    face WITHOUT setting the cooldown, otherwise the confirm that follows is
+    immediately blocked by the cooldown the preview created — making
+    attendance impossible."""
+    cache = FakeCache()
+    engine = MultiFrameDecisionEngine(cache)
+    person_id = uuid4()
+    template_id = uuid4()
+    request = RecognitionRequest(device_code="gate-a01", session_code="morning-gate", frames=[{"frame_b64": "ZmFrZS1mcmFtZS1ieXRlcy1mYWtlLWZyYW1lLWJ5dGVz", "pose_hint": None}] * 3)
+    frame_decisions = [
+        RecognitionFrameDecision(True, "match_candidate", person_id, template_id, "ST-1001", "Ada Lovelace", 0.12, 0.88, accepted_quality()),
+        RecognitionFrameDecision(True, "match_candidate", person_id, template_id, "ST-1001", "Ada Lovelace", 0.14, 0.86, accepted_quality()),
+    ]
+    response, matched_person_id, _ = asyncio.run(
+        engine.decide(request, frame_decisions, [], multi_frame_confirm=2, cooldown_seconds=30, apply_cooldown=False)
+    )
+    assert response.decision == "accepted"
+    assert response.recognition_status == "recognized"
+    assert matched_person_id == person_id
+    # No cooldown was set, so a following confirm can proceed.
+    assert ("morning-gate", person_id) not in cache.cooldowns
+    assert response.cooldown_remaining_seconds is None
+
+
+def test_decision_engine_preview_ignores_existing_cooldown() -> None:
+    """Preview must recognize even when a cooldown is already active, so the
+    face card still shows; confirm is where the cooldown is enforced."""
+    cache = FakeCache()
+    engine = MultiFrameDecisionEngine(cache)
+    person_id = uuid4()
+    template_id = uuid4()
+    cache.cooldowns[("morning-gate", person_id)] = 30
+    request = RecognitionRequest(device_code="gate-a01", session_code="morning-gate", frames=[{"frame_b64": "ZmFrZS1mcmFtZS1ieXRlcy1mYWtlLWZyYW1lLWJ5dGVz", "pose_hint": None}] * 3)
+    frame_decisions = [
+        RecognitionFrameDecision(True, "match_candidate", person_id, template_id, "ST-1001", "Ada Lovelace", 0.12, 0.88, accepted_quality()),
+        RecognitionFrameDecision(True, "match_candidate", person_id, template_id, "ST-1001", "Ada Lovelace", 0.14, 0.86, accepted_quality()),
+    ]
+    response, _, _ = asyncio.run(
+        engine.decide(request, frame_decisions, [], multi_frame_confirm=2, cooldown_seconds=30, apply_cooldown=False)
+    )
+    assert response.decision == "accepted"
+    assert response.recognition_status == "recognized"
+
+
 def test_decision_engine_returns_cooldown_when_person_already_cached() -> None:
     cache = FakeCache()
     engine = MultiFrameDecisionEngine(cache)
@@ -118,6 +169,33 @@ def test_decision_engine_returns_cooldown_when_person_already_cached() -> None:
     assert response.recognition_status == "cooldown"
     assert response.reason == "cooldown"
     assert response.cooldown_remaining_seconds == 30
+
+
+def test_decision_engine_concurrent_accepts_only_one_wins_cooldown() -> None:
+    """Two decide() calls for the same person/session: the atomic cooldown
+    acquire (SET NX) must accept the first and report cooldown for the second."""
+    cache = FakeCache()
+    engine = MultiFrameDecisionEngine(cache)
+    person_id = uuid4()
+    template_id = uuid4()
+    request = RecognitionRequest(device_code="gate-a01", session_code="morning-gate", frames=[{"frame_b64": "ZmFrZS1mcmFtZS1ieXRlcy1mYWtlLWZyYW1lLWJ5dGVz", "pose_hint": None}] * 3)
+    frame_decisions = [
+        RecognitionFrameDecision(True, "match_candidate", person_id, template_id, "ST-1001", "Ada Lovelace", 0.12, 0.88, accepted_quality()),
+        RecognitionFrameDecision(True, "match_candidate", person_id, template_id, "ST-1001", "Ada Lovelace", 0.14, 0.86, accepted_quality()),
+    ]
+
+    async def race():
+        return await asyncio.gather(
+            engine.decide(request, frame_decisions, [], multi_frame_confirm=2, cooldown_seconds=30),
+            engine.decide(request, frame_decisions, [], multi_frame_confirm=2, cooldown_seconds=30),
+        )
+
+    (first, _, _), (second, _, _) = asyncio.run(race())
+    decisions = sorted([first.decision, second.decision])
+    assert decisions == ["accepted", "rejected"], f"exactly one may be accepted, got {decisions}"
+    rejected = first if first.decision == "rejected" else second
+    assert rejected.recognition_status == "cooldown"
+    assert rejected.reason == "cooldown"
 
 
 def test_decision_engine_rejects_close_candidate_margin() -> None:
