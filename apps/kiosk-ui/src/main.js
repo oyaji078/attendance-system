@@ -547,6 +547,34 @@ function closeIdentityModal() {
   }
 }
 
+function showHomeScreen() {
+  // Neutral landing that starts no scanning loop — used on reload when an
+  // admin is already logged in, so they pick an action instead of the kiosk
+  // silently entering attendance mode.
+  state.mode = "recognize";
+  stopAttendanceLoop();
+  stopAutoCaptureLoop();
+  elements.enrollModeButton.classList.remove("is-active");
+  elements.recognizeModeButton.classList.remove("is-active");
+  elements.adminModeButton.classList.remove("is-active");
+  setScreen("home");
+  renderWizard();
+}
+
+async function ensureCameraReady() {
+  // Re-acquire the camera if the stream was dropped (common on Android when
+  // the video element was hidden during admin/complete screens). Without this,
+  // starting a new enrollment leaves the capture loop running against a dead
+  // stream and nothing happens until a manual page reload.
+  const stream = elements.camera?.srcObject;
+  const liveTrack = stream?.getVideoTracks?.().some((track) => track.readyState === "live");
+  if (state.cameraReady && liveTrack) {
+    return true;
+  }
+  await startCamera();
+  return state.cameraReady;
+}
+
 function setMode(mode) {
   if (mode === "admin") {
     openAdmin();
@@ -3842,6 +3870,21 @@ async function startEnrollment(event) {
     setScreen("capture");
     setEnrollmentState("starting");
     state.captureStatus = "starting";
+    state.uiHint = "Menyiapkan kamera...";
+    renderWizard();
+    // Guarantee a live camera before capturing — fixes re-enrollment on
+    // Android where the previous stream had been dropped.
+    try {
+      await ensureCameraReady();
+    } catch (cameraError) {
+      setEnrollmentState("error");
+      state.captureStatus = "error";
+      state.cameraWarning = cameraWarningFor(cameraError);
+      state.uiHint = state.cameraWarning;
+      elements.startButton.disabled = false;
+      renderWizard();
+      return;
+    }
     state.uiHint = "Memulai pendaftaran wajah...";
     state.lastFrameResponse = null;
     state.autoFinishStarted = false;
@@ -4352,6 +4395,35 @@ elements.adminBody.addEventListener("click", (event) => {
     showIdentityModal();
   }
 });
+
+// Click any face photo to open it full-size in the lightbox.
+const photoLightbox = document.getElementById("photo-lightbox");
+const photoLightboxImg = document.getElementById("photo-lightbox-img");
+function openPhotoLightbox(src) {
+  if (!photoLightbox || !photoLightboxImg || !src) return;
+  photoLightboxImg.src = src;
+  photoLightbox.classList.add("is-open");
+}
+function closePhotoLightbox() {
+  if (!photoLightbox || !photoLightboxImg) return;
+  photoLightbox.classList.remove("is-open");
+  photoLightboxImg.src = "";
+}
+elements.adminBody.addEventListener("click", (event) => {
+  const img = event.target?.closest?.(".face-thumb");
+  if (img && img.getAttribute("src")) {
+    event.preventDefault();
+    openPhotoLightbox(img.getAttribute("src"));
+  }
+});
+photoLightbox?.addEventListener("click", (event) => {
+  if (event.target === photoLightbox || event.target?.id === "photo-lightbox-close") {
+    closePhotoLightbox();
+  }
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePhotoLightbox();
+});
 elements.homeEnrollButton.addEventListener("click", () => {
   setMode("enroll");
   if (state.adminUser) {
@@ -4459,7 +4531,14 @@ renderWizard();
   // Silently refresh admin session so the Admin / Daftarkan Wajah buttons
   // light up if a cookie is already valid, but never force the login screen.
   await refreshMe({ showLoginOnFailure: false, intendedMode: "recognize" }).catch(() => false);
-  setMode("recognize");
+  // A logged-in admin who reloads should land on the home screen to choose an
+  // action, NOT be dropped straight into attendance scanning. Only an
+  // anonymous public kiosk auto-starts attendance mode.
+  if (state.adminUser) {
+    showHomeScreen();
+  } else {
+    setMode("recognize");
+  }
   startCamera().catch((error) => {
     setEnrollmentState("error");
     state.cameraReady = false;
