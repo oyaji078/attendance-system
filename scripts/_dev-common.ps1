@@ -70,8 +70,22 @@ function Resolve-ProjectPython {
     if ($env:ATTENDANCE_PYTHON) {
         $candidates += $env:ATTENDANCE_PYTHON
     }
-    $candidates += (Join-Path $script:RepoRoot '.venv\Scripts\python.exe')
-    $candidates += 'D:\PythonVenvs\attendance-api\Scripts\python.exe'
+
+    $repoParent = Split-Path -Parent $script:RepoRoot
+    $venvCandidates = @(
+        (Join-Path $script:RepoRoot '.venv\Scripts\python.exe'),
+        (Join-Path $repoParent '.venv\Scripts\python.exe'),
+        (Join-Path $script:RepoRoot '.venv\bin\python'),
+        (Join-Path $repoParent '.venv\bin\python'),
+        'D:\PythonVenvs\attendance-api\Scripts\python.exe'
+    )
+
+    foreach ($candidate in $venvCandidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            $candidates += $candidate
+        }
+    }
+
     $candidates += 'python'
 
     foreach ($candidate in $candidates) {
@@ -162,21 +176,84 @@ function Wait-RedisReady {
     throw "Redis was not ready within $TimeoutSeconds seconds."
 }
 
+function New-PortProcessInfo {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [int]$ReportedProcessId = 0
+    )
+
+    $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    $cimProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+
+    $name = if ($process) { $process.ProcessName }
+    elseif ($cimProcess) { [IO.Path]::GetFileNameWithoutExtension([string]$cimProcess.Name) }
+    else { '<unknown>' }
+
+    [pscustomobject]@{
+        Port        = $Port
+        PID         = $ProcessId
+        ReportedPID = if ($ReportedProcessId -ne 0) { $ReportedProcessId } else { $ProcessId }
+        Inherited   = ($ReportedProcessId -ne 0 -and $ReportedProcessId -ne $ProcessId)
+        Name        = $name
+        Path        = if ($process) { $process.Path } else { $null }
+        CommandLine = if ($cimProcess) { $cimProcess.CommandLine } else { $null }
+        Accessible  = ($null -ne $process -or $null -ne $cimProcess)
+    }
+}
+
+function Get-ChildProcesses {
+    param(
+        [Parameter(Mandatory = $true)][int]$ParentProcessId,
+        [datetime]$CreatedAtOrAfter = [datetime]::MinValue
+    )
+
+    # Windows leaves a dead parent's PID on its orphans and recycles PIDs, so an
+    # unrelated process can advertise ParentProcessId = $ParentProcessId. A real
+    # child cannot predate its parent, so the timestamp filters those out.
+    # conhost/WerFault are console and crash-report helpers, never socket owners.
+    @(
+        Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentProcessId" -ErrorAction SilentlyContinue |
+            Where-Object {
+                [IO.Path]::GetFileNameWithoutExtension([string]$_.Name) -notin @('conhost', 'WerFault') -and
+                $null -ne $_.CreationDate -and
+                $_.CreationDate -ge $CreatedAtOrAfter
+            }
+    )
+}
+
 function Get-ListeningPortProcesses {
     param([Parameter(Mandatory = $true)][int]$Port)
 
     $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
-    $processIds = @($connections | Select-Object -ExpandProperty OwningProcess -Unique)
-    foreach ($processId in $processIds) {
-        $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-        $cimProcess = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
-        [pscustomobject]@{
-            Port = $Port
-            PID = $processId
-            Name = if ($process) { $process.ProcessName } else { '<unknown>' }
-            Path = if ($process) { $process.Path } else { $null }
-            CommandLine = if ($cimProcess) { $cimProcess.CommandLine } else { $null }
-            Accessible = ($null -ne $process)
+    $seen = @{}
+
+    foreach ($group in @($connections | Group-Object -Property OwningProcess)) {
+        $ownerId = [int]$group.Name
+        $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+
+        # Windows reports the PID that CREATED the listening socket. When that
+        # process exits, a child that inherited the socket handle (the uvicorn
+        # --reload worker, an http.server subprocess) keeps the port open while
+        # netstat still names the dead parent. Resolve to the live heirs so the
+        # port owner can actually be identified and stopped.
+        $candidateIds = if ($owner) { @($ownerId) }
+        else {
+            $socketTimes = @($group.Group | Where-Object { $null -ne $_.CreationTime } | ForEach-Object { $_.CreationTime } | Sort-Object)
+            # The heir inherited this socket, so it cannot predate it. Allow a
+            # small skew for the gap between socket bind and child spawn.
+            $cutoff = if ($socketTimes.Count -gt 0) { $socketTimes[0].AddSeconds(-5) } else { [datetime]::MinValue }
+
+            $heirs = @(Get-ChildProcesses -ParentProcessId $ownerId -CreatedAtOrAfter $cutoff)
+            if ($heirs.Count -gt 0) { @($heirs | ForEach-Object { [int]$_.ProcessId }) } else { @($ownerId) }
+        }
+
+        foreach ($candidateId in $candidateIds) {
+            if ($seen.ContainsKey($candidateId)) {
+                continue
+            }
+            $seen[$candidateId] = $true
+            New-PortProcessInfo -Port $Port -ProcessId $candidateId -ReportedProcessId $ownerId
         }
     }
 }
@@ -212,6 +289,56 @@ function Test-ExpectedKioskProcess {
     return ($PortProcess.Name -like 'python*' -and [string]::IsNullOrWhiteSpace($commandLine))
 }
 
+function Stop-ProcessTree {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $self = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    if (-not $self) {
+        return
+    }
+
+    $selfCreated = if ($null -ne $self.CreationDate) { $self.CreationDate } else { [datetime]::MinValue }
+    foreach ($child in @(Get-ChildProcesses -ParentProcessId $ProcessId -CreatedAtOrAfter $selfCreated)) {
+        Stop-ProcessTree -ProcessId ([int]$child.ProcessId)
+    }
+
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    try {
+        Stop-Process -Id $ProcessId -Force -ErrorAction Stop
+    }
+    catch {
+        Write-Warning "Could not stop PID ${ProcessId}: $($_.Exception.Message)"
+    }
+
+    $deadline = (Get-Date).AddSeconds(8)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    try {
+        taskkill /F /PID $ProcessId *> $null
+    }
+    catch {
+        Write-Warning "taskkill fallback failed for PID $ProcessId."
+    }
+
+    $deadline = (Get-Date).AddSeconds(3)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+            return
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    Write-Warning "PID $ProcessId is still alive after a force stop."
+}
+
 function Stop-ProcessByPidFile {
     param(
         [Parameter(Mandatory = $true)][string]$PidPath,
@@ -226,8 +353,8 @@ function Stop-ProcessByPidFile {
     if ($pidValue -and $pidValue -match '^\d+$') {
         $process = Get-Process -Id ([int]$pidValue) -ErrorAction SilentlyContinue
         if ($process) {
-            Write-Host "Stopping $Name process $pidValue."
-            Stop-Process -Id ([int]$pidValue) -Force
+            Write-Host "Stopping $Name process $pidValue (and descendants)."
+            Stop-ProcessTree -ProcessId ([int]$pidValue)
         }
     }
     Remove-Item -LiteralPath $PidPath -Force -ErrorAction SilentlyContinue
@@ -249,8 +376,16 @@ function Stop-ExpectedPortProcess {
         }
 
         if ($isExpected) {
-            Write-Host "Stopping existing $Kind process $($portProcess.PID) on port $Port."
-            Stop-Process -Id $portProcess.PID -Force
+            $origin = if ($portProcess.Inherited) { " (inherited socket from exited PID $($portProcess.ReportedPID))" } else { '' }
+            Write-Host "Stopping existing $Kind process $($portProcess.PID)$origin on port $Port."
+            Stop-ProcessTree -ProcessId $portProcess.PID
+        }
+    }
+
+    $remaining = @(Get-ListeningPortProcesses -Port $Port)
+    if ($remaining.Count -gt 0) {
+        foreach ($remainingProcess in $remaining) {
+            Write-Warning "Port $Port is still held by PID $($remainingProcess.PID) after stop attempt."
         }
     }
 }
@@ -274,7 +409,10 @@ function Assert-PortAvailable {
         }
     }
 
-    $details = $portProcesses | ForEach-Object { "PID=$($_.PID) Name=$($_.Name) CommandLine=$($_.CommandLine)" }
+    $details = $portProcesses | ForEach-Object {
+        $origin = if ($_.Inherited) { " (inherited socket from exited PID $($_.ReportedPID))" } else { '' }
+        "PID=$($_.PID)$origin Name=$($_.Name) CommandLine=$($_.CommandLine)"
+    }
 
     if ($hasStalePort) {
         Write-Host ''

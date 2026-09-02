@@ -1,12 +1,16 @@
 import asyncio
-from datetime import date as date_type, datetime
+from datetime import date as date_type, datetime, timedelta, timezone
+from io import BytesIO
 import logging
 import re
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from fastapi.responses import FileResponse, StreamingResponse
+from openpyxl import Workbook
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from sqlalchemy import Date, desc, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,12 +18,20 @@ from app.core.csrf import csrf_dependency
 from app.core.file_security import secure_file_path
 from app.core.security import hash_password
 from app.core.dependencies import AppContainer, get_admin_service, get_attendance_session_service, get_container, get_session, require_admin
-from db.domain.attendance import normalize_attendance_decision, normalize_attendance_event_type, normalize_attendance_reason
+from db.domain.attendance import ATTENDANCE_SUCCESS_DECISIONS, normalize_attendance_decision, normalize_attendance_event_type, normalize_attendance_reason
 from db.models.entities import AdminUser, AttendanceLog, AttendanceSession, ClassGroup, DeviceConfig, FaceSample, Lecturer, Person
 from db.repositories.device_configs import DeviceConfigRepository
 from db.schemas.academic import ClassListResponse, ClassRead, ClassWrite, LecturerListResponse, LecturerRead, LecturerWrite, NextIdResponse
 from db.schemas.admin import AdminActionResponse, AdminMetricsResponse, AdminPersonResponse
-from db.schemas.admin_extended import AttendanceLogAdminRead, AttendanceLogListResponse, AttendanceLogUpdateRequest, DeviceConfigListResponse
+from db.schemas.admin_extended import (
+    AttendanceLogAdminRead,
+    AttendanceLogListResponse,
+    AttendanceLogUpdateRequest,
+    AttendanceMatrixColumn,
+    AttendanceMatrixRow,
+    ClassAttendanceMatrixResponse,
+    DeviceConfigListResponse,
+)
 from db.schemas.attendance_sessions import AttendanceSessionCreateRequest, AttendanceSessionListResponse, AttendanceSessionNextCodeResponse, AttendanceSessionRead, AttendanceSessionUpdateRequest
 from db.schemas.auth import AdminUserCreateRequest, AdminUserListResponse, AdminUserRead, AdminUserUpdateRequest
 from db.schemas.device import DeviceConfigRead, DeviceConfigWrite
@@ -94,6 +106,8 @@ def lecturer_read(lecturer: Lecturer) -> LecturerRead:
         full_name=lecturer.full_name,
         email=lecturer.email,
         department=lecturer.department,
+        address=lecturer.address,
+        rank_grade=lecturer.rank_grade,
         is_active=lecturer.is_active,
         created_at=lecturer.created_at,
         updated_at=lecturer.updated_at,
@@ -184,7 +198,7 @@ async def guard_admin_account_lockout(
     session: AsyncSession,
 ) -> None:
     if user.id == current_admin.id and (next_role != "admin" or not next_active):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Akun yang sedang digunakan tidak bisa dinonaktifkan atau diubah menjadi dosen.")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Akun yang sedang digunakan tidak bisa dinonaktifkan atau diubah menjadi guru.")
     if user.role == "admin" and user.is_active and (next_role != "admin" or not next_active):
         if await active_admin_count(session) <= 1:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Minimal satu akun admin aktif harus tersedia.")
@@ -528,13 +542,13 @@ async def delete_person(person_id: UUID, service: AdminService = Depends(get_adm
     try:
         result = await service.delete_person(person_id)
     except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mahasiswa tidak ditemukan.") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Murid tidak ditemukan.") from exc
     await session.commit()
     await container.cache.invalidate_cached("metrics")
     await _invalidate_persons_cache(container)
     return AdminActionResponse(
         status="ok",
-        detail=f"Mahasiswa dihapus dari daftar aktif. {result['templates_deactivated']} template wajah aktif dinonaktifkan.",
+        detail=f"Murid dihapus dari daftar aktif. {result['templates_deactivated']} template wajah aktif dinonaktifkan.",
     )
 
 
@@ -543,7 +557,7 @@ async def clear_person_face_data(person_id: UUID, service: AdminService = Depend
     try:
         result = await service.clear_person_face_data(person_id)
     except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mahasiswa tidak ditemukan.") from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Murid tidak ditemukan.") from exc
     await session.commit()
     await container.cache.invalidate_cached("metrics")
     await _invalidate_persons_cache(container)
@@ -585,7 +599,9 @@ async def person_photo(person_id: UUID, session: AsyncSession = Depends(get_sess
 async def next_entity_id(entity: str = "student", class_code: str | None = None, session: AsyncSession = Depends(get_session)) -> NextIdResponse:
     if entity != "student":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Jenis ID belum didukung.")
-    now = datetime.now().astimezone()
+    # WITA, not machine-local time: near midnight the two disagree on the month
+    # and the generated student IDs would jump between prefixes.
+    now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=8)))
     prefix = f"{now:%y%m}-{normalize_class_code(class_code)}"
     result = await session.execute(select(Person.student_id).where(Person.student_id.like(f"{prefix}-%")))
     used_numbers: set[int] = set()
@@ -975,6 +991,190 @@ async def list_attendance_logs(
     for index, row in enumerate(result.all(), start=offset + 1):
         items.append(attendance_log_admin_read(row, index))
     return AttendanceLogListResponse(items=items, total=total, limit=limit, offset=offset, has_next=offset + limit < total)
+
+
+@router.get("/admin/classes/{class_id}/attendance-matrix", response_model=ClassAttendanceMatrixResponse)
+async def class_attendance_matrix(class_id: UUID, session: AsyncSession = Depends(get_session)) -> ClassAttendanceMatrixResponse:
+    class_group = await session.get(ClassGroup, class_id)
+    if class_group is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kelas tidak ditemukan.")
+
+    students_result = await session.execute(
+        select(Person)
+        .where(Person.class_id == class_id, Person.is_deleted.is_(False))
+        .order_by(Person.student_id.asc())
+    )
+    students = [row[0] for row in students_result.all()]
+
+    session_rows = await session.execute(
+        select(
+            AttendanceSession.id,
+            AttendanceSession.session_code,
+            AttendanceSession.session_name,
+            func.max(AttendanceLog.created_at).label("last_event_at"),
+        )
+        .join(AttendanceLog, AttendanceLog.session_id == AttendanceSession.id)
+        .where(
+            AttendanceSession.class_id == class_id,
+            AttendanceSession.is_deleted.is_(False),
+            AttendanceLog.is_deleted.is_(False),
+        )
+        .group_by(AttendanceSession.id)
+        .order_by(desc("last_event_at"))
+        .limit(10)
+    )
+    sessions = [row for row in session_rows.all()]
+
+    columns = [
+        AttendanceMatrixColumn(
+            session_id=row[0],
+            session_code=row[1],
+            session_name=row[2],
+            date=row[3],
+            label=f"{row[1] or 'Sesi'}",
+        )
+        for row in reversed(sessions)
+    ]
+    session_ids = [row[0] for row in sessions]
+
+    attendance_rows = {}
+    if session_ids:
+        attendance_result = await session.execute(
+            select(AttendanceLog.person_id, AttendanceLog.session_id, AttendanceLog.decision)
+            .where(
+                AttendanceLog.session_id.in_(session_ids),
+                AttendanceLog.is_deleted.is_(False),
+            )
+        )
+        for person_id, session_id, decision in attendance_result.all():
+            if person_id is None:
+                continue
+            key = (str(person_id), str(session_id))
+            attendance_rows[key] = attendance_rows.get(key, False) or (decision in ATTENDANCE_SUCCESS_DECISIONS)
+
+    rows = [
+        AttendanceMatrixRow(
+            student_id=item.student_id,
+            full_name=item.full_name,
+            cells=[
+                bool(attendance_rows.get((str(item.id), str(column.session_id))))
+                for column in columns
+            ],
+        )
+        for item in students
+    ]
+
+    return ClassAttendanceMatrixResponse(
+        class_id=class_group.id,
+        class_code=class_group.class_code,
+        class_name=class_group.class_name,
+        columns=columns,
+        rows=rows,
+        student_count=len(rows),
+    )
+
+
+@router.get("/admin/attendance-logs/export")
+async def export_attendance_logs(
+    format: str = Query("excel", pattern="^(excel|pdf)$"),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    result = await session.execute(
+        select(AttendanceLog, Person, AttendanceSession, ClassGroup)
+        .outerjoin(Person, Person.id == AttendanceLog.person_id)
+        .outerjoin(AttendanceSession, AttendanceSession.id == AttendanceLog.session_id)
+        .outerjoin(ClassGroup, ClassGroup.id == Person.class_id)
+        .where(AttendanceLog.is_deleted.is_(False))
+        .order_by(AttendanceLog.created_at.desc())
+    )
+    rows = result.all()
+    headers = [
+        "No",
+        "ID Murid",
+        "Nama",
+        "Kelas",
+        "Nama Kelas",
+        "Kode Sesi",
+        "Status",
+        "Alasan",
+        "Confidence",
+        "Perangkat",
+        "Tipe Event",
+        "Waktu",
+    ]
+    data_rows = []
+    for index, row in enumerate(rows, start=1):
+        log, person, attendance_session, class_group = row
+        data_rows.append(
+            [
+                index,
+                person.student_id if person else "",
+                person.full_name if person else "",
+                class_group.class_code if class_group else "",
+                class_group.class_name if class_group else "",
+                attendance_session.session_code if attendance_session else "",
+                log.decision,
+                log.reason,
+                f"{log.confidence:.2f}" if log.confidence is not None else "",
+                log.device_code,
+                log.event_type,
+                log.created_at.isoformat() if log.created_at else "",
+            ]
+        )
+
+    if format == "pdf":
+        buffer = BytesIO()
+        pdf = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        x = 40
+        y = height - 40
+        pdf.setFont("Helvetica-Bold", 14)
+        pdf.drawString(x, y, "Rekapan Absensi")
+        y -= 28
+        pdf.setFont("Helvetica-Bold", 9)
+        col_positions = [40, 80, 170, 280, 380, 430, 490, 540, 620, 700, 770, 840]
+        for col_index, header in enumerate(headers):
+            pdf.drawString(col_positions[col_index], y, header)
+        y -= 18
+        pdf.setFont("Helvetica", 8)
+        for row in data_rows:
+            if y < 60:
+                pdf.showPage()
+                y = height - 40
+                pdf.setFont("Helvetica-Bold", 9)
+                for col_index, header in enumerate(headers):
+                    pdf.drawString(col_positions[col_index], y, header)
+                y -= 18
+                pdf.setFont("Helvetica", 8)
+            for col_index, value in enumerate(row):
+                text = str(value)
+                pdf.drawString(col_positions[col_index], y, text[:25])
+            y -= 14
+        pdf.showPage()
+        pdf.save()
+        buffer.seek(0)
+        return StreamingResponse(
+            buffer,
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=attendance-recap.pdf"},
+        )
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Rekapan Absensi"
+    sheet.append(headers)
+    for data_row in data_rows:
+        sheet.append(data_row)
+    for idx, _ in enumerate(headers, start=1):
+        sheet.column_dimensions[sheet.cell(row=1, column=idx).column_letter].width = 18
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return StreamingResponse(
+        stream,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=attendance-recap.xlsx"},
+    )
 
 
 @router.patch("/admin/attendance-logs/{log_id}", response_model=AttendanceLogAdminRead)

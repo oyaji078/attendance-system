@@ -50,7 +50,9 @@ class Settings(BaseSettings):
     login_rate_limit_window_seconds: int = 60
     ml_rate_limit_max: int = 30
     ml_rate_limit_window_seconds: int = 60
-    enrollment_rate_limit_max: int = 20
+    # Kiosk UI paces enrollment frames at >=1.2s apart (~50/min); keep the
+    # limit above that so auto-capture does not trip 429 on a healthy flow.
+    enrollment_rate_limit_max: int = 60
     enrollment_rate_limit_window_seconds: int = 60
     attendance_rate_limit_max: int = 40
     attendance_rate_limit_window_seconds: int = 60
@@ -58,6 +60,13 @@ class Settings(BaseSettings):
     public_api_url: str | None = None
     cors_allowed_origins: list[str] = Field(default_factory=list)
     trusted_tunnel_origins: list[str] = Field(default_factory=list)
+    # Behind a reverse proxy or tunnel every request arrives from the proxy's own
+    # address, which collapses per-IP rate limiting into one shared bucket: one
+    # brute-forcer then locks out every other user. Turning this on makes the
+    # limiter read the first X-Forwarded-For hop instead. Only enable it when a
+    # proxy you control sets that header — otherwise a client can forge it and
+    # sidestep the limit entirely.
+    trust_proxy_headers: bool = False
     kiosk_public_mode: bool = True
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:8080", "http://127.0.0.1:8080", "http://localhost:8000", "http://127.0.0.1:8000"])
     csrf_enabled: bool = True

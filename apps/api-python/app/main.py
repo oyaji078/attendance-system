@@ -126,4 +126,19 @@ _KIOSK_DIR = Path(__file__).resolve().parents[3] / "apps" / "kiosk-ui" / "src"
 if _KIOSK_DIR.is_dir():
     from fastapi.staticfiles import StaticFiles
 
-    app.mount("/", StaticFiles(directory=str(_KIOSK_DIR), html=True), name="kiosk")
+    class RevalidatingStaticFiles(StaticFiles):
+        """Serve the kiosk UI with `Cache-Control: no-cache`.
+
+        Without it the responses carry only ETag/Last-Modified, so browsers fall
+        back to heuristic caching and keep running a stale ``main.js`` after a
+        deploy — new admin menus simply never appear until a hard refresh.
+        `no-cache` means "revalidate before use", not "don't cache": unchanged
+        files still answer 304 and cost nothing.
+        """
+
+        def file_response(self, *args, **kwargs):
+            response = super().file_response(*args, **kwargs)
+            response.headers.setdefault("Cache-Control", "no-cache")
+            return response
+
+    app.mount("/", RevalidatingStaticFiles(directory=str(_KIOSK_DIR), html=True), name="kiosk")

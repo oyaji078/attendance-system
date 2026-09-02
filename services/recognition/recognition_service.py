@@ -20,6 +20,7 @@ from db.models.entities import AttendanceLog, AttendanceSession, ClassGroup, Fac
 from db.repositories.attendance import AttendanceRepository
 from db.repositories.device_configs import DeviceConfigRepository
 from db.schemas.attendance import AttendanceConfirmRequest, AttendanceConfirmResponse, AttendancePreviewRequest, AttendanceRecordRead
+from services.academic.kiosk_bridge import record_face_attendance
 from db.schemas.attendance_sessions import ResolvedAttendanceSession
 from db.schemas.common import PersonSummary
 from db.schemas.recognition import RecognitionRequest, RecognitionResponse
@@ -246,7 +247,7 @@ class RecognitionService:
             response.pending_attendance_token = token
             return response
 
-        resolution, resolved_session, _matches = await self._resolve_session_for_person(response.person)
+        resolution, resolved_session, matches = await self._resolve_session_for_person(response.person)
         response.session_resolution = resolution
         response.resolved_session = resolved_session
         if resolved_session is not None:
@@ -262,6 +263,18 @@ class RecognitionService:
             response.decision = "rejected"
             response.reason = "multiple_matching_sessions"
             response.recognition_status = "multiple_matching_sessions"
+            # Hand the candidates to the kiosk so the operator can pick one
+            # instead of being told "ambiguous" with no way forward.
+            response.matching_sessions = matches
+            response.matching_session_tokens = {
+                match.session_code: await self._generate_pending_token(
+                    person_id=person.person_id,
+                    session_code=match.session_code,
+                    device_code=request.device_code,
+                    class_id=person.class_id,
+                )
+                for match in matches
+            }
         else:
             response.decision = "rejected"
             response.reason = "no_matching_session"
@@ -275,9 +288,9 @@ class RecognitionService:
             raise LookupError(f"Data perangkat tidak ditemukan untuk {request.device_code}.")
         person = await self._person_summary(request.person_id, None)
         if person is None:
-            raise LookupError("Mahasiswa tidak ditemukan.")
+            raise LookupError("Murid tidak ditemukan.")
         if person.template_id is None:
-            raise ValueError("Wajah mahasiswa belum terdaftar.")
+            raise ValueError("Wajah murid belum terdaftar.")
         session_record = await self.attendance_repository.get_session(request.session_code)
         if session_record is None:
             raise LookupError("Sesi absensi tidak ditemukan.")
@@ -357,6 +370,22 @@ class RecognitionService:
                     },
                 )
             )
+            # Carry the scan through to the academic register, so the recap
+            # reflects face recognition rather than only manual entry. Failure
+            # here must not lose the attendance itself.
+            try:
+                await record_face_attendance(
+                    self.session,
+                    attendance_session_id=session_record.id,
+                    person_id=request.person_id,
+                    confidence=log.confidence,
+                )
+            except Exception:  # noqa: BLE001 - the log above is the source of truth
+                LOGGER.warning(
+                    "attendance_ledger_bridge_failed",
+                    exc_info=True,
+                    extra={"session_code": request.session_code},
+                )
             if self.cache is not None:
                 await self.cache.set_cooldown(request.session_code, request.person_id, session_record.cooldown_seconds)
                 await self.cache.set_recent_match(

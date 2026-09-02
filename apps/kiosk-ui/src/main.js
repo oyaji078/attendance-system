@@ -4,6 +4,7 @@ const API_BASE_URL = kioskConfig.apiBaseUrl;
 const DEVICE_CODE = kioskConfig.deviceCode;
 const VIDEO_PREVIEW_MIRRORED = Boolean(kioskConfig.previewMirrored);
 const ATTENDANCE_SESSION_STORAGE_KEY = "attendanceSessionId";
+const AUTO_CLASS_OPTION = "__auto__";
 const CAMERA_STORAGE_KEY = "attendanceSelectedCameraId";
 const CAMERA_SELECTION_MODE_KEY = "attendanceCameraSelectionMode";
 const AUTO_CAPTURE_INTERVAL_MS = 560;
@@ -144,11 +145,6 @@ const elements = {
   loginError: document.getElementById("login-error"),
   loginCancelButton: document.getElementById("login-cancel"),
   adminScreen: document.getElementById("admin-screen"),
-  adminTitle: document.getElementById("admin-title"),
-  adminEyebrow: document.getElementById("admin-eyebrow"),
-  adminBody: document.getElementById("admin-content-body"),
-  adminAlert: document.getElementById("admin-alert"),
-  adminPrimaryAction: document.getElementById("admin-primary-action"),
   adminModeButton: document.getElementById("mode-admin"),
   adminLogoutButton: document.getElementById("logout-admin"),
   identityModal: document.getElementById("identity-modal"),
@@ -243,6 +239,7 @@ const elements = {
   finishButton: document.getElementById("finish-enrollment"),
   attendanceTopBar: document.getElementById("attendance-top-bar"),
   attendanceSessionBadge: document.getElementById("attendance-session-badge"),
+  attendancePickerOverlay: document.getElementById("attendance-picker-overlay"),
   attendanceChangeSessionBtn: document.getElementById("attendance-change-session-btn"),
   attendanceCloseBtn: document.getElementById("attendance-close-btn"),
   attendanceToast: document.getElementById("attendance-toast"),
@@ -255,6 +252,13 @@ const elements = {
 };
 
 const state = {
+  // Auto mode scans without pre-selecting a class: the backend matches the
+  // face across every class, then resolves that person's own session. Picking
+  // a class manually is the fallback, not the default.
+  attendanceAutoMode: true,
+  // classId -> sessionId, used only to answer "multiple_matching_sessions"
+  // once per class instead of on every scan. It never scopes the search.
+  attendanceSessionByClass: {},
   mode: "enroll",
   screen: "home",
   cameraReady: false,
@@ -308,17 +312,26 @@ const state = {
   selectedAttendanceClassId: null,
   pendingAttendance: null,
   attendanceConfirmInFlight: false,
+  selectedAttendanceMatrixClassId: null,
+  attendanceMatrix: null,
+  attendanceMatrixLoading: false,
+  attendanceMatrixLoadError: "",
   successfulAttendances: [],
   adminUser: null,
   pendingModeAfterLogin: "recognize",
   adminView: "dashboard",
   adminData: {},
   adminEdit: null,
-  adminSessionFilters: {
-    class_id: "",
-    date: "",
-    status: "",
-    include_deleted: false,
+  academic: {
+    filters: { academic_year: "", semester: "", class_id: "", subject_id: "", lecturer_id: "" },
+    academicYears: [],
+    selectedScheduleId: null,
+    selectedMeetingId: null,
+    meetings: [],
+    sheet: null,
+    recap: null,
+    loading: false,
+    error: "",
   },
   cameraDevices: [],
   selectedCameraId: readStoredCameraId(),
@@ -561,6 +574,44 @@ function showHomeScreen() {
   renderWizard();
 }
 
+const DEVICE_STATUS_LABELS = {
+  camera: "Kamera",
+  label: "Perangkat",
+  tracks: "Jalur video",
+  device_code: "Kode kiosk",
+  api_base_url: "Server",
+  name: "Kesalahan",
+  message: "Pesan",
+  constraint: "Batasan",
+};
+
+const DEVICE_STATUS_VALUES = {
+  ready: "Siap",
+  disconnected: "Terputus",
+  default: "Bawaan",
+};
+
+/// Renders the device panel as a readable list. It used to dump raw
+/// JSON.stringify output into a <pre>, which is unreadable on a phone and the
+/// least inviting thing on the screen.
+function renderDeviceStatus(data) {
+  if (!elements.status) return;
+  const entries = Object.entries(data ?? {}).filter(([, value]) => value !== undefined && value !== null && value !== "");
+  if (entries.length === 0) {
+    elements.status.innerHTML = `<p class="device-status-empty">Belum ada data perangkat.</p>`;
+    return;
+  }
+  elements.status.innerHTML = entries
+    .map(([key, value]) => {
+      const label = DEVICE_STATUS_LABELS[key] ?? key.replaceAll("_", " ");
+      const raw = String(value);
+      const shown = DEVICE_STATUS_VALUES[raw] ?? raw;
+      const tone = raw === "ready" ? "ok" : raw === "disconnected" ? "bad" : "";
+      return `<div class="device-status-row"><dt>${escapeHtml(label)}</dt><dd${tone ? ` data-tone="${tone}"` : ""}>${escapeHtml(shown)}</dd></div>`;
+    })
+    .join("");
+}
+
 async function ensureCameraReady() {
   // Re-acquire the camera if the stream was dropped (common on Android when
   // the video element was hidden during admin/complete screens). Without this,
@@ -613,11 +664,6 @@ function generatedStudentId() {
   const date = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
   const time = `${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}${String(now.getSeconds()).padStart(2, "0")}`;
   return `AUTO-${date}-${time}`;
-}
-
-function normalizeSessionCode(value) {
-  const sessionCode = String(value ?? "").trim();
-  return sessionCode.length > 0 ? sessionCode : null;
 }
 
 function rememberSession(session) {
@@ -733,14 +779,6 @@ function resolvedSessionLabel(session, { includeCode = false } = {}) {
   return `${session.session_name || "Sesi absensi"}${code}`;
 }
 
-function resolvedSessionStart(session) {
-  return session?.start_time ?? session?.starts_at ?? null;
-}
-
-function resolvedSessionEnd(session) {
-  return session?.end_time ?? session?.ends_at ?? null;
-}
-
 function resetAttendanceSessionLookup() {
   state.attendanceSessionLookupInFlight = false;
   state.attendanceSessionLookupDone = false;
@@ -763,6 +801,7 @@ async function loadAttendanceClasses() {
     // Skip the "Pilih Kelas" step when there is exactly one active class —
     // the operator shouldn't have to pick from a list of one.
     if (
+      !state.attendanceAutoMode &&
       !state.selectedAttendanceClassId &&
       !state.selectedAttendanceSessionId &&
       state.availableAttendanceClasses.length === 1
@@ -921,19 +960,6 @@ function distanceState(response) {
     return { key: "ideal", label: "Jarak sudah pas" };
   }
   return { key: "ok", label: "Jarak cukup baik" };
-}
-
-function speedModeLabel() {
-  if (!state.acceptedPerPose) {
-    return "Mode perekaman";
-  }
-  if (state.acceptedPerPose <= 2) {
-    return `Mode cepat - ${state.acceptedPerPose}/pose`;
-  }
-  if (state.acceptedPerPose === 3) {
-    return `Mode normal - ${state.acceptedPerPose}/pose`;
-  }
-  return `Mode ketat - ${state.acceptedPerPose}/pose`;
 }
 
 function allPosesComplete() {
@@ -1456,26 +1482,6 @@ function finishLivenessChallenge(passed, result = null) {
   }
 }
 
-function formatConfidence(confidence) {
-  return typeof confidence === "number" && Number.isFinite(confidence) ? `${Math.round(confidence * 100)}%` : "-";
-}
-
-function currentTimeText() {
-  return new Intl.DateTimeFormat("id-ID", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date());
-}
-
-function currentDateText() {
-  return new Intl.DateTimeFormat("id-ID", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(new Date());
-}
-
 function initialsFor(person) {
   const source = String(person?.full_name || person?.student_id || "?").trim();
   const words = source.split(/\s+/).filter(Boolean);
@@ -1498,8 +1504,16 @@ function attendancePayload(frames) {
   return {
     device_code: DEVICE_CODE,
     frames: payloadFrames,
-    session_id: state.selectedAttendanceSessionId ?? null,
+    // Omitting session_id makes the backend search every class and resolve the
+    // session from the recognized person's own class.
+    session_id: state.attendanceAutoMode ? null : (state.selectedAttendanceSessionId ?? null),
   };
+}
+
+// True only while the operator has opted out of auto mode and still owes us a
+// pick — that is the one state where scanning must wait.
+function attendanceNeedsManualPick() {
+  return !state.attendanceAutoMode && !state.selectedAttendanceSessionId;
 }
 
 function qualitySummaryFromResponse(response) {
@@ -1525,18 +1539,6 @@ function responseIsRecognized(response) {
 
 function responseIsCooldown(response) {
   return responseRecognitionStatus(response) === "cooldown" || response?.reason === "cooldown" || response?.reason === "person_on_cooldown";
-}
-
-function attendanceDecisionLabel(decision, reason = "") {
-  const labels = {
-    accepted: "Diterima",
-    rejected: "Ditolak",
-    manual_approved: "Disetujui Manual",
-    manual_rejected: "Ditolak Manual",
-  };
-  const detail = REASON_COPY[reason] || (reason ? reason.replaceAll("_", " ") : "");
-  const label = detail && decision === "rejected" ? `${labels[decision] ?? decision} - ${detail}` : (labels[decision] ?? decision ?? "-");
-  return escapeHtml(label);
 }
 
 function isQualityReason(reason) {
@@ -1754,11 +1756,19 @@ function showAttendanceToast(type, message, timeoutMs = 2200) {
 
 let attendanceEdgeSheetHandler = null;
 
+let attendanceEdgeSheetHideTimer = null;
+
 function hideAttendanceEdgeSheet() {
   if (elements.attendanceEdgeSheet) {
     elements.attendanceEdgeSheet.classList.remove("visible");
-    setTimeout(() => {
+    // Cancel any pending hide first: showing a new sheet within the 320ms
+    // animation window would otherwise be hidden again by the stale timer.
+    if (attendanceEdgeSheetHideTimer !== null) {
+      clearTimeout(attendanceEdgeSheetHideTimer);
+    }
+    attendanceEdgeSheetHideTimer = setTimeout(() => {
       elements.attendanceEdgeSheet.classList.add("is-hidden");
+      attendanceEdgeSheetHideTimer = null;
     }, 320);
   }
   attendanceEdgeSheetHandler = null;
@@ -1781,6 +1791,10 @@ function showAttendanceEdgeSheet({ title, message, actions }) {
       });
       elements.attendanceEdgeActions.appendChild(btn);
     });
+  }
+  if (attendanceEdgeSheetHideTimer !== null) {
+    clearTimeout(attendanceEdgeSheetHideTimer);
+    attendanceEdgeSheetHideTimer = null;
   }
   requestAnimationFrame(() => {
     elements.attendanceEdgeSheet.classList.remove("is-hidden");
@@ -1884,9 +1898,9 @@ function renderAttendance() {
   const recognizing = state.attendanceRequestInFlight || state.attendanceStatus === "recognizing" || state.attendanceConfirmInFlight;
   const ambiguous = response?.reason === "candidate_margin_too_small" || state.attendanceStatus === "ambiguous";
   const qualityRejected = state.attendanceStatus === "quality_rejected" || isQualityRejection(response);
-  const noSession = !state.selectedAttendanceSessionId;
+  const noSession = attendanceNeedsManualPick();
   let instruction = "Posisikan wajah di dalam oval";
-  if (noSession) instruction = "Pilih sesi absensi untuk mulai";
+  if (noSession) instruction = "Pilih kelas untuk mulai";
   else if (recognizing) instruction = state.attendanceConfirmInFlight ? "Mencatat absensi..." : "Mengenali wajah...";
   else if (qualityRejected) instruction = qualityGuidanceMessage(response);
   else if (ambiguous) instruction = "Data wajah terlalu mirip";
@@ -1923,7 +1937,12 @@ function renderAttendance() {
   // Top bar with session info
   if (elements.attendanceTopBar && elements.attendanceSessionBadge) {
     const session = selectedAttendanceSession();
-    if (session) {
+    if (state.attendanceAutoMode) {
+      // Keep the bar up so "Ganti Kelas/Sesi" stays reachable — it is the only
+      // way back out of auto mode.
+      elements.attendanceSessionBadge.textContent = "Otomatis - semua kelas";
+      elements.attendanceTopBar.classList.remove("is-hidden");
+    } else if (session) {
       elements.attendanceSessionBadge.textContent = attendanceSessionLabel(session, { includeClass: false });
       elements.attendanceTopBar.classList.remove("is-hidden");
     } else if (state.selectedAttendanceClassId) {
@@ -1939,6 +1958,9 @@ function renderAttendance() {
   }
 
   renderAttendanceSessionPicker();
+  if (elements.attendancePickerOverlay) {
+    elements.attendancePickerOverlay.classList.toggle("is-hidden", !noSession);
+  }
   if (elements.attendanceChangeSessionBtn) {
     elements.attendanceChangeSessionBtn.classList.toggle("is-hidden", noSession);
   }
@@ -1951,6 +1973,10 @@ function renderAttendance() {
   renderPoseDots();
   setStatusBadge(noSession ? "no_session" : (recognizing ? "recognizing" : state.attendanceStatus));
   renderAttendanceResultCard();
+  // appendSuccessfulAttendance() fills state.successfulAttendances on every
+  // confirmed scan, but nothing painted it — the "Absensi Berhasil" panel stayed
+  // on its empty message for the whole session.
+  renderSuccessfulAttendanceLog();
 }
 
 function renderAttendanceSessionPicker() {
@@ -1983,7 +2009,7 @@ function renderAttendanceSessionPicker() {
   if (!state.selectedAttendanceClassId) {
     elements.attendanceSessionCopy.textContent = "Pilih Kelas";
     elements.attendanceSessionPicker.classList.remove("is-hidden");
-    elements.attendanceSessionSelect.innerHTML = `<option value="">-- Pilih Kelas --</option>${classes
+    elements.attendanceSessionSelect.innerHTML = `<option value="">-- Pilih Kelas --</option><option value="${AUTO_CLASS_OPTION}">Otomatis - semua kelas</option>${classes
       .map((c) => `<option value="${escapeHtml(c.class_id)}">${escapeHtml(c.class_code)} - ${escapeHtml(c.class_name)}</option>`)
       .join("")}`;
     return;
@@ -2104,7 +2130,7 @@ function renderSuccessfulAttendanceLog() {
   const rows = items
     .map((item) => {
       const photo = item.photo
-        ? `<img class="success-log-photo" src="${item.photo}" alt="" />`
+        ? `<img class="success-log-photo" src="${escapeHtml(item.photo)}" alt="" />`
         : `<span class="success-log-avatar">${escapeHtml(initialsFor(item))}</span>`;
       return `<article class="success-log-item">
         ${photo}
@@ -2120,96 +2146,9 @@ function renderSuccessfulAttendanceLog() {
   elements.attendanceSuccessEmpty = document.getElementById("attendance-success-empty");
 }
 
-function formatDateOnly(value) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(value));
-}
-
-function datetimeLocalValue(value) {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return localDate.toISOString().slice(0, 16);
-}
-
 function formatTimeOnly(value) {
   if (!value) return "-";
   return new Intl.DateTimeFormat("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
-}
-
-function formatRepeatDays(days) {
-  if (!days || days.length === 0) return "-";
-  const labels = { monday: "Sen", tuesday: "Sel", wednesday: "Rab", thursday: "Kam", friday: "Jum", saturday: "Sab", sunday: "Min" };
-  return days.map((d) => labels[d] || d).join(", ");
-}
-
-function formatSessionTimeRange(startTime, endTime) {
-  if (!startTime && !endTime) return "-";
-  const s = startTime ? String(startTime).substring(0, 5) : "-";
-  const e = endTime ? String(endTime).substring(0, 5) : "-";
-  return `${s}–${e}`;
-}
-
-async function loadSessionTodayLogs(sessionId) {
-  const container = document.getElementById("session-today-logs-container");
-  if (!container || !sessionId) return;
-  container.innerHTML = `<p class="muted">Memuat log...</p>`;
-  try {
-    const logs = await getJson(`/attendance/sessions/${sessionId}/today-logs?timezone=Asia/Makassar`);
-    if (!logs || logs.length === 0) {
-      container.innerHTML = `<p class="muted">Belum ada absensi hari ini.</p>`;
-      return;
-    }
-    const rows = logs.map((log) => {
-      const photo = log.captured_image_url
-        ? `<img class="face-thumb mini" src="${API_BASE_URL}${log.captured_image_url}" alt="" />`
-        : `<span class="avatar-mini">?</span>`;
-      return `<tr>
-        <td>${photo}</td>
-        <td>${escapeHtml(log.full_name ?? log.student_id ?? "-")}</td>
-        <td>${escapeHtml(log.class_code ?? "-")}</td>
-        <td>${formatWitaDateTime(log.created_at)}</td>
-        <td>${attendanceDecisionLabel(log.decision, log.reason)}</td>
-      </tr>`;
-    }).join("");
-    container.innerHTML = `<table class="admin-table today-logs-table"><thead><tr>
-      <th style="width:52px">Foto</th><th>Nama</th><th>Kelas</th><th>Waktu Absen (WITA)</th><th>Status</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
-  } catch (error) {
-    container.innerHTML = `<p class="muted danger">Gagal memuat log.</p>`;
-  }
-}
-
-function formatWitaDateTime(value) {
-  if (!value) return "-";
-  const date = new Date(value);
-  const wita = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const dd = String(wita.getUTCDate()).padStart(2, "0");
-  const mm = String(wita.getUTCMonth() + 1).padStart(2, "0");
-  const yy = wita.getUTCFullYear();
-  const hh = String(wita.getUTCHours()).padStart(2, "0");
-  const min = String(wita.getUTCMinutes()).padStart(2, "0");
-  return `${dd}/${mm}/${yy} ${hh}.${min} WITA`;
-}
-
-function suggestedSessionCode() {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(-2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  const hh = String(now.getHours()).padStart(2, "0");
-  const min = String(now.getMinutes()).padStart(2, "0");
-  return `ABS-${yy}${mm}${dd}-${hh}${min}`;
-}
-
-function formatPercent(value) {
-  return typeof value === "number" ? `${Math.round(value * 100)}%` : "-";
-}
-
-function readCookie(name) {
-  const match = document.cookie.match(new RegExp(`(?:^|; )${name.replace(/([.$?*|{}()\[\]\\\/+^])/g, "\\$1")}=([^;]*)`));
-  return match ? decodeURIComponent(match[1]) : null;
 }
 
 function getCookie(name) {
@@ -2310,41 +2249,10 @@ function escapeHtml(value) {
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function statusBadge(label, tone = "neutral") {
-  return `<span class="admin-badge ${tone}">${label}</span>`;
-}
-
-function enrollmentStatus(item) {
-  if (item.primary_template_id && item.is_active) return statusBadge("Terdaftar", "success");
-  if (item.sample_count > 0 && !item.primary_template_id) return statusBadge("Wajah Dihapus", "danger");
-  return statusBadge("Belum Terdaftar", "warning");
-}
-
-function activeStatus(item) {
-  return item.is_active ? statusBadge("Aktif", "success") : statusBadge("Nonaktif", "danger");
-}
-
-function sessionStatus(item) {
-  if (item.is_deleted) return statusBadge("Diarsipkan", "warning");
-  return item.is_active ? statusBadge("Aktif", "success") : statusBadge("Nonaktif", "danger");
-}
-
-function sessionMatchesAdminFilters(item) {
-  const filters = state.adminSessionFilters;
-  if (!filters.include_deleted && item.is_deleted) return false;
-  if (filters.class_id && item.class_id !== filters.class_id) return false;
-  if (filters.status === "active" && (!item.is_active || item.is_deleted)) return false;
-  if (filters.status === "inactive" && (item.is_active || item.is_deleted)) return false;
-  if (filters.status === "deleted" && !item.is_deleted) return false;
-  if (filters.date) {
-    const selected = filters.date;
-    const dates = [item.starts_at, item.ends_at].filter(Boolean).map((value) => datetimeLocalValue(value).slice(0, 10));
-    if (dates.length && !dates.includes(selected)) return false;
-  }
-  return true;
+    .replaceAll('"', "&quot;")
+    // Single quotes too: today every attribute here is double-quoted, but that
+    // is not a property a future edit is obliged to preserve.
+    .replaceAll("'", "&#39;");
 }
 
 function updateAuthUi() {
@@ -2385,11 +2293,22 @@ async function openAdmin() {
   elements.recognizeModeButton.classList.remove("is-active");
   elements.adminModeButton.classList.add("is-active");
   setScreen("admin");
-  await loadAdminData();
-  renderAdmin();
+  await openAdminConsole();
 }
 
 async function refreshMe({ showLoginOnFailure = false, intendedMode = "recognize" } = {}) {
+  // No csrf_token cookie means no session, and the code below would discard the
+  // result anyway. Skipping the call keeps a 401 out of the browser console on
+  // every public-kiosk load — DevTools logs those regardless of how the
+  // rejection is handled in JS.
+  if (!csrfToken()) {
+    state.adminUser = null;
+    if (showLoginOnFailure) {
+      handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode });
+    }
+    updateAuthUi();
+    return false;
+  }
   try {
     const response = await getJson("/auth/me", { suppressErrorLog: true });
     state.adminUser = response.user;
@@ -2414,686 +2333,49 @@ async function refreshMe({ showLoginOnFailure = false, intendedMode = "recognize
   return Boolean(state.adminUser);
 }
 
-async function loadAdminData() {
-  elements.adminAlert.classList.add("is-hidden");
-  try {
-    const [metrics, persons, lecturers, users, classes, sessions, logs, devices] = await Promise.all([
-      getJson("/admin/metrics"),
-      getJson("/admin/persons"),
-      getJson("/admin/lecturers"),
-      getJson("/admin/users"),
-      getJson("/admin/classes"),
-      getJson("/admin/attendance-sessions?include_deleted=true"),
-      getJson("/admin/attendance-logs"),
-      getJson("/admin/devices/configs"),
-    ]);
-    state.adminData = { metrics, persons: persons.items, lecturers: lecturers.items, users: users.items, classes: classes.items, sessions: sessions.items, logs: logs.items, devices };
-  } catch (error) {
-    elements.adminAlert.textContent = errorSummaryFor(error, "Data admin gagal dimuat");
-    elements.adminAlert.classList.remove("is-hidden");
-  }
-}
+/* ---------------------------------------------------------------------------
+ * Admin console
+ * ---------------------------------------------------------------------------
+ * The whole admin panel now lives in ./console/, mounted into #admin-screen.
+ * main.js keeps only the kiosk: camera, enrolment, Mode Absensi, and auth.
+ * ------------------------------------------------------------------------ */
 
-function adminRows(items, columns, actionsFor, options = {}) {
-  if (!items?.length) {
-    return `<div class="empty-state">${options.emptyText ?? "Belum ada data"}</div>`;
-  }
-  const actionWidth = options.actionWidth ?? "220px";
-  return `
-    <div class="data-table" style="--cols:${columns.map((column) => column.width || "1fr").join(" ")};--action-col:${actionWidth}">
-      <div class="table-head">${columns.map((column) => `<span>${column.label}</span>`).join("")}<span>Aksi</span></div>
-      ${items
-        .map(
-          (item, index) => `
-            <article class="table-row ${item.is_active === false ? "is-inactive" : ""}">
-              ${columns.map((column) => `<span data-label="${column.label}">${column.render(item, index)}</span>`).join("")}
-              <span class="row-actions">${actionsFor(item)}</span>
-            </article>
-          `,
-        )
-        .join("")}
-    </div>`;
-}
-
-function adminSelectOptions(items, valueKey, labelKey, selected = null) {
-  return `<option value="">-</option>${(items || [])
-    .map((item) => {
-      const value = String(item[valueKey] ?? "");
-      return `<option value="${escapeHtml(value)}" ${value === String(selected ?? "") ? "selected" : ""}>${escapeHtml(item[labelKey] ?? "")}</option>`;
-    })
-    .join("")}`;
-}
-
-function renderAdmin() {
-  const titles = {
-    dashboard: ["Dashboard", "Ringkasan Sistem"],
-    students: ["Mahasiswa", "Data Mahasiswa"],
-    lecturers: ["Dosen", "Data Dosen"],
-    users: ["Akun Login", "Registrasi Admin dan Dosen"],
-    classes: ["Kelas", "Manajemen Kelas"],
-    enrollment: ["Enrollment", "Pendaftaran Wajah"],
-    sessions: ["Sesi Absensi", "Manajemen Sesi"],
-    logs: ["Log Absensi", "Riwayat Absensi"],
-    devices: ["Perangkat", "Konfigurasi Perangkat"],
-  };
-  const [eyebrow, title] = titles[state.adminView] ?? titles.dashboard;
-  elements.adminEyebrow.textContent = eyebrow;
-  elements.adminTitle.textContent = title;
-  document.querySelectorAll(".admin-nav").forEach((button) => button.classList.toggle("is-active", button.dataset.adminView === state.adminView));
-  elements.adminPrimaryAction.classList.toggle("is-hidden", state.adminView === "dashboard" || state.adminView === "logs" || state.adminView === "enrollment" || state.adminView === "students");
-  elements.adminPrimaryAction.textContent = state.adminView === "devices" ? "Tambah / Ubah Perangkat" : state.adminView === "users" ? "Tambah Akun" : "Tambah Data";
-  const renderers = {
-    dashboard: renderAdminDashboard,
-    students: renderStudents,
-    lecturers: renderLecturers,
-    users: renderUsers,
-    classes: renderClasses,
-    enrollment: renderEnrollmentAdmin,
-    sessions: renderSessions,
-    logs: renderLogs,
-    devices: renderDevices,
-  };
-  elements.adminBody.innerHTML = `${(renderers[state.adminView] ?? renderAdminDashboard)()}${renderAdminDrawer()}`;
-  if (state.adminEdit?.type === "session") {
-    loadSessionTodayLogs(state.adminEdit.item?.session_id);
-  }
-}
-
-function renderAdminDashboard() {
-  const metrics = state.adminData.metrics ?? {};
-  const logs = state.adminData.logs ?? [];
-  return `
-    <section class="metric-grid">
-      ${[
-        ["Mahasiswa", metrics.total_students ?? 0],
-        ["Dosen", metrics.total_lecturers ?? 0],
-        ["Kelas", metrics.total_classes ?? 0],
-        ["Enrollment", metrics.total_enrollments ?? 0],
-        ["Hadir Hari Ini", metrics.today_attendance_count ?? 0],
-        ["Gagal/Tidak Dikenal", metrics.unknown_failed_count ?? 0],
-      ]
-        .map(([label, value]) => `<article class="metric-card"><span>${label}</span><strong>${value}</strong></article>`)
-        .join("")}
-    </section>
-    <h3>Absensi Terbaru</h3>
-    ${adminRows(
-      logs.slice(0, 8),
-      [
-        { label: "Nama", render: (item) => item.full_name ?? "-" },
-        { label: "ID", render: (item) => item.student_id ?? "-" },
-        { label: "Status", render: (item) => attendanceDecisionLabel(item.decision, item.reason) },
-        { label: "Waktu", render: (item) => `${formatDateOnly(item.created_at)} ${formatTimeOnly(item.created_at)}` },
-      ],
-      () => "",
-    )}
-  `;
-}
-
-function renderStudents() {
-  const persons = state.adminData.persons ?? [];
-  return `<section class="admin-panel split-panel">
-      <div>
-        <strong>Mahasiswa adalah halaman pengelolaan data.</strong>
-        <p>Tambah mahasiswa baru dilakukan melalui menu Enrollment. Perekaman wajah juga dimulai dari Enrollment.</p>
-      </div>
-      <button data-action="go-enrollment" type="button">Buka Enrollment</button>
-    </section>${adminRows(
-    persons,
-    [
-      { label: "No", width: "56px", render: (_item, index) => index + 1 },
-      { label: "Foto", width: "72px", render: (item) => (item.sample_count ? `<img class="face-thumb" src="${API_BASE_URL}/admin/persons/${item.person_id}/photo" alt="" />` : `<span class="avatar-mini">?</span>`) },
-      { label: "ID", width: "minmax(120px, 1.1fr)", render: (item) => item.student_id },
-      { label: "Nama", width: "minmax(130px, 1.2fr)", render: (item) => item.full_name },
-      { label: "Kelas", width: "minmax(70px, 0.7fr)", render: (item) => item.class_code ?? "-" },
-      { label: "Status", width: "112px", render: (item) => activeStatus(item) },
-      { label: "Enrollment", width: "150px", render: enrollmentStatus },
-    ],
-    (item) => `<button class="action-btn" data-action="edit-student" data-id="${item.person_id}" type="button">Edit</button><button class="action-btn" data-action="reenroll" data-id="${item.person_id}" type="button">Re-enroll</button><button class="action-btn danger" data-action="clear-face-data" data-id="${item.person_id}" type="button">Hapus Wajah</button>${item.is_active ? `<button class="action-btn danger" data-action="deactivate-student" data-id="${item.person_id}" type="button">Nonaktifkan</button>` : `<button class="action-btn success" data-action="reactivate-student" data-id="${item.person_id}" type="button">Aktifkan</button>`}<button class="action-btn danger" data-action="delete-student" data-id="${item.person_id}" type="button">Hapus</button>`,
-    { emptyText: "Belum ada mahasiswa aktif", actionWidth: "150px" },
-  )}`;
-}
-
-function studentForm(item = {}) {
-  return `
-    <form class="admin-form" data-form="student">
-      <input type="hidden" name="person_id" value="${item.person_id ?? ""}" />
-      <label>ID Mahasiswa<input name="student_id" value="${item.student_id ?? ""}" placeholder="otomatis jika kosong" /></label>
-      <label>Nama<input name="full_name" value="${item.full_name ?? ""}" required /></label>
-      <label>Email<input name="email" value="${item.email ?? ""}" /></label>
-      <label>Kelas<select name="class_id">${adminSelectOptions(state.adminData.classes, "class_id", "class_code", item.class_id)}</select></label>
-      <button type="submit">Simpan</button><button class="secondary" data-action="cancel-edit" type="button">Batal</button>
-    </form>`;
-}
-
-function renderLecturers() {
-  return `${lecturerForm()}${adminRows(
-    state.adminData.lecturers ?? [],
-    [
-      { label: "Kode", render: (item) => item.lecturer_code },
-      { label: "Nama", render: (item) => item.full_name },
-      { label: "Email", render: (item) => item.email ?? "-" },
-      { label: "Departemen", render: (item) => item.department ?? "-" },
-      { label: "Status", render: (item) => activeStatus(item) },
-    ],
-    (item) => `<button class="action-btn" data-action="edit-lecturer" data-id="${item.lecturer_id}" type="button">Edit</button>${item.is_active ? `<button class="action-btn danger" data-action="deactivate-lecturer" data-id="${item.lecturer_id}" type="button">Nonaktifkan</button>` : `<button class="action-btn success" data-action="reactivate-lecturer" data-id="${item.lecturer_id}" type="button">Aktifkan</button>`}`,
-  )}`;
-}
-
-function lecturerForm(item = {}) {
-  const codeField = item.lecturer_id
-    ? `<label>Kode Dosen<input name="lecturer_code" value="${escapeHtml(item.lecturer_code ?? "")}" /></label>`
-    : `<label>Kode Dosen <span class="field-hint">otomatis jika kosong</span><input name="lecturer_code" placeholder="DSN-0001 (otomatis)" /></label>`;
-  return `<form class="admin-form" data-form="lecturer"><input type="hidden" name="lecturer_id" value="${item.lecturer_id ?? ""}" />${codeField}<label>Nama<input name="full_name" value="${escapeHtml(item.full_name ?? "")}" required /></label><label>Email<input name="email" value="${escapeHtml(item.email ?? "")}" /></label><label>Departemen<input name="department" value="${escapeHtml(item.department ?? "")}" /></label><button type="submit">${item.lecturer_id ? "Simpan" : "Tambah Dosen"}</button>${item.lecturer_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
-}
-
-function roleLabel(role) {
-  if (role === "admin") return "Admin";
-  if (role === "lecturer") return "Dosen";
-  return role || "-";
-}
-
-function renderUsers() {
-  return `${userForm()}${adminRows(
-    state.adminData.users ?? [],
-    [
-      { label: "Username", width: "minmax(120px, 1fr)", render: (item) => escapeHtml(item.username) },
-      { label: "Nama", width: "minmax(140px, 1.1fr)", render: (item) => escapeHtml(item.full_name) },
-      { label: "Role", width: "100px", render: (item) => roleLabel(item.role) },
-      { label: "Dosen", width: "minmax(120px, 1fr)", render: (item) => escapeHtml(item.lecturer_name ?? "-") },
-      { label: "Email", width: "minmax(130px, 1fr)", render: (item) => escapeHtml(item.email ?? "-") },
-      { label: "Status", width: "112px", render: (item) => activeStatus(item) },
-    ],
-    (item) => `<button class="action-btn" data-action="edit-user" data-id="${item.admin_id}" type="button">Edit</button>${item.is_active ? `<button class="action-btn danger" data-action="deactivate-user" data-id="${item.admin_id}" type="button">Nonaktifkan</button>` : `<button class="action-btn success" data-action="reactivate-user" data-id="${item.admin_id}" type="button">Aktifkan</button>`}`,
-    { actionWidth: "150px" },
-  )}`;
-}
-
-function userForm(item = {}) {
-  const role = item.role ?? "admin";
-  const lecturerOptions = adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id);
-  const passwordLabel = item.admin_id ? "Password baru" : "Password";
-  const passwordAttrs = item.admin_id ? `placeholder="Kosongkan jika tidak diganti"` : "required";
-  return `<form class="admin-form" data-form="user">
-    <input type="hidden" name="admin_id" value="${item.admin_id ?? ""}" />
-    <label>Username<input name="username" value="${escapeHtml(item.username ?? "")}" autocomplete="off" required /></label>
-    <label>Nama<input name="full_name" value="${escapeHtml(item.full_name ?? "")}" required /></label>
-    <label>Email<input name="email" value="${escapeHtml(item.email ?? "")}" /></label>
-    <label>${passwordLabel}<input name="password" type="password" autocomplete="new-password" ${passwordAttrs} /></label>
-    <label>Role<select name="role"><option value="admin" ${role === "admin" ? "selected" : ""}>Admin</option><option value="lecturer" ${role === "lecturer" ? "selected" : ""}>Dosen</option></select></label>
-    <label>Dosen<select name="lecturer_id">${lecturerOptions}</select></label>
-    <button type="submit">${item.admin_id ? "Simpan" : "Tambah Akun"}</button>${item.admin_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}
-  </form>`;
-}
-
-function renderClasses() {
-  return `${classForm()}${adminRows(
-    state.adminData.classes ?? [],
-    [
-      { label: "Kode", render: (item) => item.class_code },
-      { label: "Nama", render: (item) => item.class_name },
-      { label: "Dosen", render: (item) => item.lecturer_name ?? "-" },
-      { label: "Mahasiswa", render: (item) => item.total_students ?? 0 },
-      { label: "Status", render: (item) => activeStatus(item) },
-    ],
-    (item) => `<button class="action-btn" data-action="edit-class" data-id="${item.class_id}" type="button">Edit</button>${item.is_active ? `<button class="action-btn danger" data-action="deactivate-class" data-id="${item.class_id}" type="button">Nonaktifkan</button>` : `<button class="action-btn success" data-action="reactivate-class" data-id="${item.class_id}" type="button">Aktifkan</button>`}`,
-  )}`;
-}
-
-function classForm(item = {}) {
-  const codeField = item.class_id
-    ? `<label>Kode Kelas<input name="class_code" value="${escapeHtml(item.class_code ?? "")}" /></label>`
-    : `<label>Kode Kelas <span class="field-hint">otomatis jika kosong</span><input name="class_code" placeholder="KLS-0001 (otomatis)" /></label>`;
-  return `<form class="admin-form" data-form="class"><input type="hidden" name="class_id" value="${item.class_id ?? ""}" />${codeField}<label>Nama Kelas<input name="class_name" value="${escapeHtml(item.class_name ?? "")}" required /></label><label>Dosen<select name="lecturer_id">${adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id)}</select></label><label>Deskripsi<input name="description" value="${escapeHtml(item.description ?? "")}" /></label><button type="submit">${item.class_id ? "Simpan" : "Tambah Kelas"}</button>${item.class_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
-}
-
-function renderEnrollmentAdmin() {
-  const persons = state.adminData.persons ?? [];
-  return `<section class="admin-panel enrollment-admin-panel">
-      <div>
-        <p class="eyebrow">Registrasi</p>
-        <h3>Enrollment mahasiswa dan wajah</h3>
-        <p>Gunakan halaman ini untuk membuat data mahasiswa baru, memilih kelas, lalu merekam wajah. Re-enrollment dan pencabutan data wajah juga dilakukan di sini.</p>
-      </div>
-      <button id="admin-start-enrollment" type="button">Mulai Pendaftaran Wajah</button>
-    </section>${adminRows(
-      persons,
-      [
-        { label: "ID", render: (item) => item.student_id },
-        { label: "Nama", render: (item) => item.full_name },
-        { label: "Kelas", render: (item) => item.class_code ?? "-" },
-        { label: "Status Data", render: (item) => activeStatus(item) },
-        { label: "Status Wajah", render: enrollmentStatus },
-      ],
-      (item) => `<button class="action-btn" data-action="reenroll" data-id="${item.person_id}" type="button">Re-enroll</button><button class="action-btn danger" data-action="clear-face-data" data-id="${item.person_id}" type="button">Hapus Wajah</button>`,
-      { emptyText: "Belum ada enrollment", actionWidth: "240px" },
-    )}`;
-}
-
-function renderSessions() {
-  const sessions = (state.adminData.sessions ?? []).filter(sessionMatchesAdminFilters);
-  const activeSessions = (state.adminData.sessions ?? []).filter((item) => !item.is_deleted && sessionIsCurrentlyUsable(item));
-  const activeSummary = activeSessions.length
-    ? activeSessions.map((session) => `${escapeHtml(session.session_name)} (${escapeHtml(session.session_code)})`).join(", ")
-    : "Belum ada sesi absensi aktif";
-  return `<section class="admin-panel split-panel">
-      <div>
-        <strong>Sesi absensi aktif</strong>
-        <p>${activeSummary}</p>
-      </div>
-      <span>${activeSessions.length} aktif</span>
-    </section>${sessionFilterForm()}${sessionForm()}${adminRows(
-    sessions,
-    [
-      { label: "Kode", width: "minmax(128px, 1fr)", render: (item) => item.session_code },
-      { label: "Nama", width: "minmax(130px, 1.1fr)", render: (item) => item.session_name },
-      { label: "Kelas", width: "minmax(96px, 0.8fr)", render: (item) => item.class_name ?? item.class_code ?? "-" },
-      { label: "Dosen", width: "minmax(120px, 1fr)", render: (item) => item.lecturer_name ?? "-" },
-      { label: "Status", width: "120px", render: sessionStatus },
-      { label: "Hari", width: "minmax(140px, 1fr)", render: (item) => formatRepeatDays(item.repeat_days) },
-      { label: "Jam", width: "minmax(100px, 0.8fr)", render: (item) => formatSessionTimeRange(item.start_time, item.end_time) },
-    ],
-    (item) =>
-      `<button class="action-btn" data-action="copy-session-code" data-code="${escapeHtml(item.session_code)}" type="button">Salin Kode</button><button class="action-btn" data-action="edit-session" data-id="${item.session_id}" type="button">Detail</button>${
-        item.is_deleted
-          ? ""
-          : item.is_active
-            ? `<button class="action-btn danger" data-action="deactivate-session" data-id="${item.session_id}" type="button">Nonaktifkan</button>`
-            : `<button class="action-btn success" data-action="activate-session" data-id="${item.session_id}" type="button">Aktifkan</button>`
-      }${item.is_deleted ? "" : `<button class="action-btn danger" data-action="delete-session" data-id="${item.session_id}" type="button">Hapus</button>`}`,
-    { emptyText: "Belum ada sesi absensi", actionWidth: "150px" },
-  )}`;
-}
-
-function sessionForm(item = {}) {
-  const codeField = item.session_id
-    ? `<label>Kode Sesi<input name="session_code" value="${escapeHtml(item.session_code ?? "")}" required /></label>`
-    : "";
-  const selectedKind = item.session_kind === "class" ? "lecture" : (item.session_kind ?? "lecture");
-  const kindOptions = [
-    ["lecture", "Kuliah"],
-    ["lab", "Praktikum"],
-    ["exam", "Ujian"],
-    ["other", "Lainnya"],
-  ]
-    .map(([value, label]) => `<option value="${value}" ${selectedKind === value ? "selected" : ""}>${label}</option>`)
-    .join("");
-  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
-  const dayLabels = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
-  const repeatDays = Array.isArray(item.repeat_days) ? item.repeat_days : [];
-  const dayCheckboxes = days
-    .map((day, i) => `<label class="checkbox-label"><input type="checkbox" name="repeat_days" value="${day}" ${repeatDays.includes(day) ? "checked" : ""} /> ${dayLabels[i]}</label>`)
-    .join("");
-  const startTimeVal = item.start_time ? String(item.start_time).substring(0, 5) : "";
-  const endTimeVal = item.end_time ? String(item.end_time).substring(0, 5) : "";
-  return `<form class="admin-form" data-form="session"><input type="hidden" name="session_id" value="${item.session_id ?? ""}" />${codeField}<label>Nama Sesi<input name="session_name" value="${escapeHtml(item.session_name ?? "")}" placeholder="Absensi Pagi" required /></label><label>Jenis<select name="session_kind">${kindOptions}</select></label><label>Kelas<select name="class_id">${adminSelectOptions(state.adminData.classes, "class_id", "class_code", item.class_id)}</select></label><label>Dosen<select name="lecturer_id">${adminSelectOptions(state.adminData.lecturers, "lecturer_id", "full_name", item.lecturer_id)}</select></label><label>Device<input name="device_code" value="${escapeHtml(item.device_code ?? DEVICE_CODE)}" /></label><fieldset class="admin-fieldset"><legend>Hari Aktif</legend><div class="day-checkboxes">${dayCheckboxes}</div></fieldset><label>Jam Mulai<input name="start_time" type="time" value="${startTimeVal}" /></label><label>Jam Selesai<input name="end_time" type="time" value="${endTimeVal}" /></label><button type="submit">${item.session_id ? "Simpan" : "Tambah Sesi"}</button>${item.session_id ? `<button class="secondary" data-action="cancel-edit" type="button">Batal</button>` : ""}</form>`;
-}
-
-function sessionFilterForm() {
-  const filters = state.adminSessionFilters;
-  return `<form class="admin-form admin-filter-form" data-form="session-filter">
-    <label>Kelas<select name="class_id">${adminSelectOptions(state.adminData.classes, "class_id", "class_code", filters.class_id)}</select></label>
-    <label>Tanggal<input name="date" type="date" value="${escapeHtml(filters.date)}" /></label>
-    <label>Status<select name="status">
-      <option value="" ${filters.status ? "" : "selected"}>Semua</option>
-      <option value="active" ${filters.status === "active" ? "selected" : ""}>Aktif</option>
-      <option value="inactive" ${filters.status === "inactive" ? "selected" : ""}>Nonaktif</option>
-      <option value="deleted" ${filters.status === "deleted" ? "selected" : ""}>Diarsipkan</option>
-    </select></label>
-    <label class="checkbox-label"><input name="include_deleted" type="checkbox" ${filters.include_deleted ? "checked" : ""} /> Tampilkan sesi dihapus</label>
-    <button type="submit">Filter</button>
-  </form>`;
-}
-
-function renderLogs() {
-  return adminRows(
-    state.adminData.logs ?? [],
-    [
-      { label: "No", width: "52px", render: (item) => item.no },
-      { label: "Foto", width: "70px", render: (item) => (item.captured_image_url ? `<img class="face-thumb" src="${API_BASE_URL}${item.captured_image_url}" alt="" />` : `<span class="avatar-mini">?</span>`) },
-      { label: "ID", render: (item) => item.student_id ?? "-" },
-      { label: "Nama", render: (item) => item.full_name ?? "-" },
-      { label: "Kelas", render: (item) => item.class_code ?? "-" },
-      { label: "Tanggal", render: (item) => formatDateOnly(item.created_at) },
-      { label: "Jam", render: (item) => formatTimeOnly(item.created_at) },
-      { label: "Status", render: (item) => attendanceDecisionLabel(item.decision, item.reason) },
-      { label: "Cocok", render: (item) => formatPercent(item.confidence) },
-    ],
-    (item) => `<button class="action-btn" data-action="mark-log" data-id="${item.log_id}" type="button">Edit</button><button class="action-btn danger" data-action="deactivate-log" data-id="${item.log_id}" type="button">Sembunyikan</button>`,
-  );
-}
-
-function renderDevices() {
-  return `${deviceForm()}${adminRows(
-    state.adminData.devices ?? [],
-    [
-      { label: "Kamera", width: "96px", render: () => cameraStatusDot() },
-      { label: "Kode", render: (item) => item.device_code },
-      { label: "Nama", render: (item) => item.device_name },
-      { label: "Lokasi", render: (item) => item.location_hint ?? "-" },
-      { label: "API", render: (item) => item.is_enabled ? statusBadge("Aktif", "success") : statusBadge("Nonaktif", "danger") },
-      { label: "Terakhir", render: (item) => item.heartbeat?.captured_at ? `${formatDateOnly(item.heartbeat.captured_at)} ${formatTimeOnly(item.heartbeat.captured_at)}` : "-" },
-    ],
-    (item) => `<button class="action-btn" data-action="edit-device" data-id="${item.device_code}" type="button">Edit</button>`,
-  )}`;
-}
-
-function deviceForm(item = {}) {
-  const selectedCameraOption = state.cameraSelectionMode === "manual" ? state.selectedCameraId : "";
-  const cameraOptions = [
-    `<option value="" ${selectedCameraOption ? "" : "selected"}>Kamera depan/default</option>`,
-    ...state.cameraDevices.map(
-      (device, index) =>
-        `<option value="${device.deviceId}" ${device.deviceId === selectedCameraOption ? "selected" : ""}>${escapeHtml(cameraLabel(device, index))}</option>`,
-    ),
-  ].join("");
-  return `<form class="admin-form device-config-form" data-form="device"><label>Kode Device<input name="device_code" value="${item.device_code ?? DEVICE_CODE}" required /></label><label>Nama<input name="device_name" value="${item.device_name ?? "Web Kiosk"}" required /></label><label>Lokasi<input name="location_hint" value="${item.location_hint ?? ""}" /></label><label>Pilih kamera<select name="camera_device_id">${cameraOptions}</select></label><label>Similarity<input name="similarity_threshold" type="number" step="0.01" value="${item.similarity_threshold ?? 0.45}" /></label><label>Margin<input name="candidate_margin_threshold" type="number" step="0.01" value="${item.candidate_margin_threshold ?? 0.05}" /></label><label>Liveness<input name="liveness_threshold" type="number" step="0.01" value="${item.liveness_threshold ?? 0.7}" /></label><label>Accepted/pose<input name="accepted_per_pose" type="number" value="${item.accepted_per_pose ?? 3}" /></label><button type="submit">Gunakan kamera ini</button><button class="secondary" data-action="refresh-cameras" type="button">Periksa Kamera</button></form><section class="admin-panel camera-summary">${cameraStatusDot()}<span>${cameraStatusText()}</span>${state.cameraWarning ? `<small>${escapeHtml(state.cameraWarning)}</small>` : ""}</section>`;
-}
-
-function cameraStatusText() {
-  if (state.cameraStatus === "connected") return "Kamera tersambung";
-  if (state.cameraStatus === "disconnected") return "Kamera tidak tersambung";
-  return "Memeriksa kamera...";
-}
-
-function renderAdminDrawer() {
-  if (!state.adminEdit) return "";
-  const { type, item } = state.adminEdit;
-  const forms = {
-    student: studentForm(item),
-    user: userForm(item),
-    lecturer: lecturerForm(item),
-    class: classForm(item),
-    session: sessionForm(item),
-    device: deviceForm(item),
-  };
-  const titles = {
-    student: "Edit Mahasiswa",
-    user: "Edit Akun Login",
-    lecturer: "Edit Dosen",
-    class: "Edit Kelas",
-    session: "Edit Sesi Absensi",
-    device: "Edit Perangkat",
-  };
-  return `<aside class="admin-drawer" aria-label="${titles[type] ?? "Edit"}">
-    <div class="drawer-head">
-      <div>
-        <p class="eyebrow">Detail</p>
-        <h3>${titles[type] ?? "Edit Data"}</h3>
-      </div>
-      <button class="secondary compact" data-action="cancel-edit" type="button">Batal</button>
-    </div>
-    ${type === "student" ? studentDetailSummary(item) : ""}
-    ${type === "session" ? sessionDetailSummary(item) : ""}
-    ${forms[type] ?? ""}
-  </aside>`;
-}
-
-function studentDetailSummary(item = {}) {
-  return `<section class="detail-summary">
-    <div>${item.sample_count ? `<img class="face-thumb large" src="${API_BASE_URL}/admin/persons/${item.person_id}/photo" alt="" />` : `<span class="avatar-mini large">?</span>`}</div>
-    <dl>
-      <div><dt>ID</dt><dd>${escapeHtml(item.student_id ?? "-")}</dd></div>
-      <div><dt>Status</dt><dd>${activeStatus(item)}</dd></div>
-      <div><dt>Enrollment</dt><dd>${enrollmentStatus(item)}</dd></div>
-      <div><dt>Dibuat</dt><dd>${formatDateOnly(item.created_at)}</dd></div>
-      <div><dt>Diperbarui</dt><dd>${formatDateOnly(item.updated_at)}</dd></div>
-    </dl>
-  </section>`;
-}
-
-function sessionDetailSummary(item = {}) {
-  return `<section class="detail-summary session-detail-summary">
-    <dl>
-      <div><dt>Kode</dt><dd>${escapeHtml(item.session_code ?? "-")}</dd></div>
-      <div><dt>Status</dt><dd>${activeStatus(item)}</dd></div>
-      <div><dt>Kelas</dt><dd>${escapeHtml(item.class_name ?? item.class_code ?? "-")}</dd></div>
-      <div><dt>Dosen</dt><dd>${escapeHtml(item.lecturer_name ?? "-")}</dd></div>
-      <div><dt>Hari</dt><dd>${formatRepeatDays(item.repeat_days)}</dd></div>
-      <div><dt>Jam</dt><dd>${formatSessionTimeRange(item.start_time, item.end_time)}</dd></div>
-    </dl>
-    <details class="session-today-logs">
-      <summary>Absensi Hari Ini</summary>
-      <div id="session-today-logs-container" data-session-id="${item.session_id ?? ""}"></div>
-    </details>
-  </section>`;
-}
-
-function cameraStatusDot() {
-  const tone = state.cameraStatus === "connected" ? "green" : state.cameraStatus === "disconnected" ? "red" : "yellow";
-  return `<span class="status-dot ${tone}" title="${cameraStatusText()}"></span>`;
-}
-
+/** Read a form's fields into a plain object. Used by the login form. */
 function formObject(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
 
-function nullable(value) {
-  const text = String(value ?? "").trim();
-  return text ? text : null;
-}
+let consoleApp = null;
 
-async function handleAdminForm(event) {
-  const form = event.target.closest("form[data-form]");
-  if (!form) return;
-  event.preventDefault();
-  const data = formObject(form);
+/** Classes are the one piece of admin data the kiosk itself needs, for the
+ *  enrolment identity form. Fetched on its own so the console does not have to
+ *  be running. */
+async function loadKioskClasses() {
   try {
-    if (form.dataset.form === "session-filter") {
-      state.adminSessionFilters = {
-        class_id: nullable(data.class_id) ?? "",
-        date: nullable(data.date) ?? "",
-        status: nullable(data.status) ?? "",
-        include_deleted: Boolean(data.include_deleted),
-      };
-      renderAdmin();
-      return;
-    }
-    if (form.dataset.form === "student") {
-      let studentId = nullable(data.student_id);
-      if (!studentId) {
-        const classItem = (state.adminData.classes ?? []).find((item) => item.class_id === data.class_id);
-        studentId = (await getJson(`/admin/ids/next?entity=student&class_code=${encodeURIComponent(classItem?.class_code ?? "AUTO")}`)).id;
-      }
-      const payload = { student_id: studentId, full_name: data.full_name, email: nullable(data.email), class_id: nullable(data.class_id), is_active: false };
-      if (data.person_id) await apiJson("PUT", `/admin/persons/${data.person_id}`, payload);
-      else await apiJson("POST", "/admin/persons", payload);
-    }
-    if (form.dataset.form === "user") {
-      const payload = {
-        username: data.username,
-        full_name: data.full_name,
-        email: nullable(data.email),
-        role: data.role || "admin",
-        lecturer_id: data.role === "lecturer" ? nullable(data.lecturer_id) : null,
-        is_active: true,
-      };
-      if (data.password) {
-        payload.password = data.password;
-      }
-      if (data.admin_id) await apiJson("PUT", `/admin/users/${data.admin_id}`, payload);
-      else await apiJson("POST", "/admin/users", payload);
-    }
-    if (form.dataset.form === "lecturer") {
-      const payload = { lecturer_code: data.lecturer_code, full_name: data.full_name, email: nullable(data.email), department: nullable(data.department), is_active: true };
-      if (data.lecturer_id) await apiJson("PUT", `/admin/lecturers/${data.lecturer_id}`, payload);
-      else await apiJson("POST", "/admin/lecturers", payload);
-    }
-    if (form.dataset.form === "class") {
-      const payload = { class_code: data.class_code, class_name: data.class_name, lecturer_id: nullable(data.lecturer_id), description: nullable(data.description), is_active: true };
-      if (data.class_id) await apiJson("PUT", `/admin/classes/${data.class_id}`, payload);
-      else await apiJson("POST", "/admin/classes", payload);
-    }
-    if (form.dataset.form === "session") {
-      const repeatDaysChecked = Array.from(form.querySelectorAll('input[name="repeat_days"]:checked')).map((cb) => cb.value);
-      const payload = {
-        session_name: data.session_name,
-        session_kind: data.session_kind || "lecture",
-        class_id: nullable(data.class_id),
-        lecturer_id: nullable(data.lecturer_id),
-        device_code: nullable(data.device_code),
-        cooldown_seconds: 30,
-        repeat_days: repeatDaysChecked.length > 0 ? repeatDaysChecked : null,
-        start_time: nullable(data.start_time) || null,
-        end_time: nullable(data.end_time) || null,
-        timezone: "Asia/Makassar",
-        is_active: true,
-      };
-      if (nullable(data.session_code)) {
-        payload.session_code = nullable(data.session_code);
-      }
-      if (data.session_id) await apiJson("PUT", `/admin/attendance-sessions/${data.session_id}`, payload);
-      else await apiJson("POST", "/admin/attendance-sessions", payload);
-    }
-    if (form.dataset.form === "device") {
-      const cameraDeviceId = nullable(data.camera_device_id) ?? "";
-      storeCameraId(cameraDeviceId, { manual: Boolean(cameraDeviceId) });
-      const payload = {
-        device_name: data.device_name,
-        location_hint: nullable(data.location_hint),
-        det_thresh: 0.6,
-        det_size: [320, 320],
-        max_faces: 1,
-        min_face_width_px: 160,
-        min_brightness: 75,
-        min_blur_score: 90,
-        similarity_threshold: Number(data.similarity_threshold || 0.45),
-        candidate_margin_threshold: Number(data.candidate_margin_threshold || 0.05),
-        liveness_threshold: Number(data.liveness_threshold || 0.7),
-        multi_frame_confirm: 2,
-        accepted_per_pose: Number(data.accepted_per_pose || 3),
-        cooldown_seconds: 30,
-        is_enabled: true,
-      };
-      await apiJson("PUT", `/admin/devices/config/${encodeURIComponent(data.device_code)}`, payload);
-      await restartCamera();
-    }
-    state.adminEdit = null;
-    await loadAdminData();
-    renderAdmin();
-  } catch (error) {
-    elements.adminAlert.textContent = errorSummaryFor(error, "Data gagal disimpan");
-    elements.adminAlert.classList.remove("is-hidden");
+    const response = await getJson("/admin/classes?limit=100");
+    state.adminData.classes = response.items ?? [];
+  } catch {
+    state.adminData.classes = [];
   }
 }
 
-async function handleAdminAction(event) {
-  const button = event.target.closest("[data-action]");
-  if (!button) return;
-  const { action, id } = button.dataset;
-  let successMessage = "";
-  try {
-    if (action === "cancel-edit") {
-      state.adminEdit = null;
-      renderAdmin();
-      return;
-    }
-    if (action === "go-enrollment") {
-      state.adminView = "enrollment";
-      renderAdmin();
-      return;
-    }
-    if (action === "refresh-cameras") {
-      event.preventDefault();
-      await enumerateCameras();
-      renderAdmin();
-      return;
-    }
-    if (action === "copy-session-code") {
-      const code = button.dataset.code ?? "";
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(code);
-      } else {
-        window.prompt("Salin kode sesi", code);
-      }
-      elements.adminAlert.textContent = "Kode sesi berhasil disalin.";
-      elements.adminAlert.classList.remove("is-hidden");
-      return;
-    }
-    if (action === "edit-student") {
-      state.adminEdit = { type: "student", item: (state.adminData.persons ?? []).find((item) => item.person_id === id) };
-      renderAdmin();
-      return;
-    }
-    if (action === "edit-user") {
-      state.adminEdit = { type: "user", item: (state.adminData.users ?? []).find((item) => item.admin_id === id) };
-      renderAdmin();
-      return;
-    }
-    if (action === "edit-lecturer") {
-      state.adminEdit = { type: "lecturer", item: (state.adminData.lecturers ?? []).find((item) => item.lecturer_id === id) };
-      renderAdmin();
-      return;
-    }
-    if (action === "edit-class") {
-      state.adminEdit = { type: "class", item: (state.adminData.classes ?? []).find((item) => item.class_id === id) };
-      renderAdmin();
-      return;
-    }
-    if (action === "edit-session") {
-      state.adminEdit = { type: "session", item: (state.adminData.sessions ?? []).find((item) => item.session_id === id) };
-      renderAdmin();
-      return;
-    }
-    if (action === "edit-device") {
-      state.adminEdit = { type: "device", item: (state.adminData.devices ?? []).find((item) => item.device_code === id) };
-      renderAdmin();
-      return;
-    }
-    if (action === "reenroll") {
-      const person = (state.adminData.persons ?? []).find((item) => item.person_id === id);
-      setMode("enroll");
-      showIdentityModal();
-      document.getElementById("student-id").value = person.student_id;
-      document.getElementById("full-name").value = person.full_name;
-      document.getElementById("email").value = person.email ?? "";
-      populateIdentityClassOptions(person.class_id ?? "");
-    }
-    if (action === "clear-face-data") {
-      const person = (state.adminData.persons ?? []).find((item) => item.person_id === id);
-      const label = person ? `${person.full_name} (${person.student_id})` : "mahasiswa ini";
-      const confirmed = window.confirm(`Hapus wajah untuk ${label}? Data mahasiswa tetap ada, tetapi template dan foto wajah tidak digunakan lagi sampai re-enroll.`);
-      if (!confirmed) return;
-      const result = await apiJson("DELETE", `/admin/persons/${id}/face-data`);
-      successMessage = result.detail || "Data wajah berhasil dihapus.";
-    }
-    if (action === "deactivate-student") await apiJson("PATCH", `/admin/persons/${id}/deactivate`);
-    if (action === "reactivate-student") await apiJson("PATCH", `/admin/persons/${id}/reactivate`);
-    if (action === "deactivate-user") await apiJson("PATCH", `/admin/users/${id}/deactivate`);
-    if (action === "reactivate-user") await apiJson("PATCH", `/admin/users/${id}/reactivate`);
-    if (action === "delete-student") {
-      const person = (state.adminData.persons ?? []).find((item) => item.person_id === id);
-      const label = person ? `${person.full_name} (${person.student_id})` : "mahasiswa ini";
-      if (!window.confirm(`Hapus ${label} dari daftar aktif? Riwayat absensi tetap disimpan, dan template wajah aktif akan dinonaktifkan.`)) return;
-      const result = await apiJson("DELETE", `/admin/persons/${id}`);
-      successMessage = result.detail || "Mahasiswa berhasil dihapus.";
-    }
-    if (action === "deactivate-lecturer") await apiJson("PATCH", `/admin/lecturers/${id}/deactivate`);
-    if (action === "reactivate-lecturer") await apiJson("PATCH", `/admin/lecturers/${id}/reactivate`);
-    if (action === "deactivate-class") await apiJson("PATCH", `/admin/classes/${id}/deactivate`);
-    if (action === "reactivate-class") await apiJson("PATCH", `/admin/classes/${id}/reactivate`);
-    if (action === "activate-session") await apiJson("PATCH", `/admin/attendance-sessions/${id}/activate`);
-    if (action === "deactivate-session") await apiJson("PATCH", `/admin/attendance-sessions/${id}/deactivate`);
-    if (action === "close-session") await apiJson("PATCH", `/admin/attendance-sessions/${id}/close`);
-    if (action === "delete-session") {
-      if (!window.confirm("Hapus sesi ini? Riwayat absensi tidak akan hilang, tetapi sesi tidak bisa digunakan lagi.")) return;
-      const result = await apiJson("DELETE", `/admin/attendance-sessions/${id}`);
-      successMessage = result.detail || "Sesi absensi berhasil dihapus.";
-    }
-    if (action === "deactivate-log") await apiJson("PATCH", `/admin/attendance-logs/${id}/deactivate`);
-    if (action === "mark-log") await apiJson("PATCH", `/admin/attendance-logs/${id}`, { decision: "manual_approved", reason: "admin_updated" });
-    if (action !== "reenroll") {
-      await loadAdminData();
-      renderAdmin();
-      if (successMessage) {
-        elements.adminAlert.textContent = successMessage;
-        elements.adminAlert.classList.remove("is-hidden");
-      }
-    }
-  } catch (error) {
-    elements.adminAlert.textContent = errorSummaryFor(error, "Aksi gagal");
-    elements.adminAlert.classList.remove("is-hidden");
+async function openAdminConsole() {
+  const { mountConsole } = await import("./console/app.js");
+  consoleApp = mountConsole(elements.adminScreen, {
+    user: state.adminUser,
+    onExit: () => setMode("recognize"),
+    onLogout: () => elements.adminLogoutButton.click(),
+  });
+}
+
+function teardownAdminConsole() {
+  consoleApp = null;
+  if (elements.adminScreen) {
+    elements.adminScreen.innerHTML = "";
+    elements.adminScreen.className = "admin-screen is-hidden";
   }
 }
+
 
 function renderWizard() {
   if (state.mode === "recognize") {
@@ -3435,6 +2717,7 @@ async function startAttendanceMode() {
   state.attendanceSessionNotice = "";
   state.pendingAttendance = null;
   state.attendanceConfirmInFlight = false;
+  state.attendanceAutoMode = true;
   state.selectedAttendanceClassId = null;
   state.selectedAttendanceSessionId = null;
   state.availableAttendanceClasses = [];
@@ -3446,13 +2729,23 @@ async function startAttendanceMode() {
   state.attendanceSessionLookupDone = false;
   attendanceSessionLookupPromise = null;
   setScreen("recognize");
+  // The camera is acquired here rather than at boot, so the browser only asks
+  // for permission once the operator actually chose attendance.
+  const cameraOk = await ensureCameraReady().catch((error) => {
+    handleCameraFailure(error);
+    return false;
+  });
+  if (!cameraOk) {
+    return;
+  }
   await loadAttendanceClasses();
-  state.attendanceStatus = "no_session";
+  state.attendanceStatus = "scanning";
+  startAttendanceLoop();
   renderAttendance();
 }
 
 function startAttendanceLoop() {
-  if (!state.selectedAttendanceSessionId) {
+  if (attendanceNeedsManualPick()) {
     return;
   }
   if (state.attendanceLoopId) {
@@ -3511,24 +2804,41 @@ function updateAttendanceStatusFromResponse(response, checkinRequested) {
       showAttendanceConfirmModal(response);
       return;
     }
+    const classId = response?.person?.class_id ?? null;
+    const proceedWithSession = (session) => {
+      if (classId && session?.session_id) {
+        state.attendanceSessionByClass[classId] = session.session_id;
+      }
+      // Confirm needs the token minted for this exact session; the ambiguous
+      // response carries one per candidate instead of a single top-level token.
+      const token = response?.matching_session_tokens?.[session?.session_code] ?? response?.pending_attendance_token ?? null;
+      const resolved = { ...response, resolved_session: session, pending_attendance_token: token };
+      state.pendingAttendance = { response: resolved, photo: attendancePreviewPhoto(response) };
+      state.attendanceLastResponse = resolved;
+      state.attendanceStatus = "recognized";
+      state.uiHint = "Periksa detail absensi";
+      state.attendancePausedUntil = Number.POSITIVE_INFINITY;
+      showAttendanceConfirmModal(resolved);
+    };
+    // A class with several concurrent sessions would otherwise ask every single
+    // student the same question; ask once, then reuse that answer.
+    const remembered = classId ? state.attendanceSessionByClass[classId] : null;
+    const rememberedSession = remembered ? sessions.find((s) => s.session_id === remembered) : null;
+    if (rememberedSession) {
+      proceedWithSession(rememberedSession);
+      return;
+    }
     state.attendanceStatus = recognitionStatus;
     state.uiHint = attendanceMessageFromResponse(response);
-    state.attendancePausedUntil = Date.now() + 5000;
+    state.attendancePausedUntil = Number.POSITIVE_INFINITY;
     const sessionActions = sessions.slice(0, 3).map((s) => ({
       label: s.session_name ?? s.session_code ?? "Pilih",
       variant: "primary",
-      handler: () => {
-        state.pendingAttendance = { response, photo: attendancePreviewPhoto(response) };
-        state.attendanceLastResponse = { ...response, resolved_session: s };
-        state.attendanceStatus = "recognized";
-        state.uiHint = "Periksa detail absensi";
-        state.attendancePausedUntil = Number.POSITIVE_INFINITY;
-        showAttendanceConfirmModal({ ...response, resolved_session: s });
-      },
+      handler: () => proceedWithSession(s),
     }));
     showAttendanceEdgeSheet({
       title: "Pilih jadwal",
-      message: "Ditemukan lebih dari satu sesi yang sesuai. Pilih salah satu untuk melanjutkan.",
+      message: "Kelas ini punya lebih dari satu sesi aktif. Pilih salah satu — pilihan ini dipakai untuk murid berikutnya di kelas yang sama.",
       actions: [
         ...sessionActions,
         { label: "Batal", variant: "secondary", handler: () => { discardPendingAttendance(); } },
@@ -3631,7 +2941,7 @@ function formatAttendanceDebug({ endpoint, sessionCode, frames = [], response = 
 }
 
 async function sendAttendanceScan({ manual = false } = {}) {
-  if (!state.selectedAttendanceSessionId) {
+  if (attendanceNeedsManualPick()) {
     return;
   }
   if (!state.cameraReady || state.attendanceRequestInFlight || state.pendingAttendance) {
@@ -3773,7 +3083,7 @@ async function confirmPendingAttendance({ auto = false } = {}) {
 }
 
 function autoAttendanceTick() {
-  if (!state.selectedAttendanceSessionId) {
+  if (attendanceNeedsManualPick()) {
     return;
   }
   if (state.mode !== "recognize" || !state.cameraReady || state.attendanceRequestInFlight || state.pendingAttendance) {
@@ -4288,11 +3598,13 @@ function attachCameraStream(stream) {
       { once: true },
     );
   }
-  elements.status.textContent = JSON.stringify(
-    { camera: "ready", label: track?.label ?? "default", tracks: stream.getVideoTracks().length, device_code: DEVICE_CODE, api_base_url: API_BASE_URL },
-    null,
-    2,
-  );
+  renderDeviceStatus({
+    camera: "ready",
+    label: track?.label ?? "default",
+    tracks: stream.getVideoTracks().length,
+    device_code: DEVICE_CODE,
+    api_base_url: API_BASE_URL,
+  });
   renderWizard();
   if (state.mode === "recognize") startAttendanceLoop();
 }
@@ -4351,7 +3663,7 @@ elements.loginForm.addEventListener("submit", async (event) => {
       setMode("recognize");
     } else if (nextMode === "enroll") {
       setMode("enroll");
-      loadAdminData().finally(() => populateIdentityClassOptions());
+      loadKioskClasses().finally(() => populateIdentityClassOptions());
       showIdentityModal();
     } else {
       await openAdmin();
@@ -4370,30 +3682,11 @@ elements.loginCancelButton.addEventListener("click", () => {
 });
 elements.adminLogoutButton.addEventListener("click", async () => {
   await apiJson("POST", "/auth/logout").catch(() => null);
+  teardownAdminConsole();
   state.adminUser = null;
   state.pendingModeAfterLogin = "recognize";
   updateAuthUi();
   handleAuthRequired(SESSION_NOT_READY_MESSAGE, { intendedMode: "recognize" });
-});
-elements.adminScreen.addEventListener("submit", handleAdminForm);
-elements.adminScreen.addEventListener("click", handleAdminAction);
-elements.adminPrimaryAction.addEventListener("click", () => {
-  const firstInput = elements.adminBody.querySelector(".admin-form input, .admin-form select");
-  firstInput?.focus();
-});
-document.querySelectorAll(".admin-nav").forEach((button) => {
-  button.addEventListener("click", async () => {
-    state.adminView = button.dataset.adminView;
-    state.adminEdit = null;
-    await loadAdminData();
-    renderAdmin();
-  });
-});
-elements.adminBody.addEventListener("click", (event) => {
-  if (event.target?.id === "admin-start-enrollment") {
-    setMode("enroll");
-    showIdentityModal();
-  }
 });
 
 // Click any face photo to open it full-size in the lightbox.
@@ -4409,7 +3702,9 @@ function closePhotoLightbox() {
   photoLightbox.classList.remove("is-open");
   photoLightboxImg.src = "";
 }
-elements.adminBody.addEventListener("click", (event) => {
+// #admin-content-body is gone with the old panel; the console mounts into
+// #admin-screen, so the lightbox listens there instead.
+elements.adminScreen.addEventListener("click", (event) => {
   const img = event.target?.closest?.(".face-thumb");
   if (img && img.getAttribute("src")) {
     event.preventDefault();
@@ -4427,7 +3722,7 @@ document.addEventListener("keydown", (event) => {
 elements.homeEnrollButton.addEventListener("click", () => {
   setMode("enroll");
   if (state.adminUser) {
-    loadAdminData().finally(() => populateIdentityClassOptions());
+    loadKioskClasses().finally(() => populateIdentityClassOptions());
     showIdentityModal();
   }
 });
@@ -4439,6 +3734,17 @@ document.getElementById("student-id")?.addEventListener("input", (event) => {
 elements.attendanceSessionSelect.addEventListener("change", async (event) => {
   const value = event.target.value ? String(event.target.value).trim() : null;
   state.attendanceSessionNotice = "";
+  if (value === AUTO_CLASS_OPTION) {
+    state.attendanceAutoMode = true;
+    state.selectedAttendanceClassId = null;
+    state.selectedAttendanceSessionId = null;
+    state.availableAttendanceSessions = [];
+    state.attendanceStatus = "scanning";
+    state.attendanceLastResponse = null;
+    startAttendanceLoop();
+    renderAttendance();
+    return;
+  }
   if (!state.selectedAttendanceClassId) {
     if (value) {
       state.selectedAttendanceClassId = value;
@@ -4498,6 +3804,8 @@ elements.adminModeButton.addEventListener("click", () => setMode("admin"));
 if (elements.attendanceChangeSessionBtn) {
   elements.attendanceChangeSessionBtn.addEventListener("click", () => {
     stopAttendanceLoop();
+    // Leaving auto mode is what makes the class picker appear.
+    state.attendanceAutoMode = false;
     forgetSessionCode();
     state.attendanceStatus = "no_session";
     state.attendanceLastResponse = null;
@@ -4525,32 +3833,30 @@ if (elements.attendanceCloseBtn) {
   });
 }
 
+function handleCameraFailure(error) {
+  setEnrollmentState("error");
+  state.cameraReady = false;
+  state.cameraStatus = "disconnected";
+  state.attendanceStatus = "error";
+  state.cameraWarning = cameraWarningFor(error);
+  state.uiHint = state.cameraWarning;
+  const details = cameraErrorDetails(error);
+  renderDeviceStatus(details);
+  elements.recognitionResult.textContent = JSON.stringify(details, null, 2);
+  setOverlay("Kamera tidak tersedia", "rejected");
+  renderWizard();
+}
+
 renderWizard();
 (async function bootstrapKiosk() {
   // Public kiosk: attendance mode does NOT require admin login.
   // Silently refresh admin session so the Admin / Daftarkan Wajah buttons
   // light up if a cookie is already valid, but never force the login screen.
   await refreshMe({ showLoginOnFailure: false, intendedMode: "recognize" }).catch(() => false);
-  // A logged-in admin who reloads should land on the home screen to choose an
-  // action, NOT be dropped straight into attendance scanning. Only an
-  // anonymous public kiosk auto-starts attendance mode.
-  if (state.adminUser) {
-    showHomeScreen();
-  } else {
-    setMode("recognize");
-  }
-  startCamera().catch((error) => {
-    setEnrollmentState("error");
-    state.cameraReady = false;
-    state.cameraStatus = "disconnected";
-    state.attendanceStatus = "error";
-    state.cameraWarning = cameraWarningFor(error);
-    state.uiHint = state.cameraWarning;
-    const details = cameraErrorDetails(error);
-    elements.status.textContent = JSON.stringify(details, null, 2);
-    elements.recognitionResult.textContent = JSON.stringify(details, null, 2);
-    setOverlay("Kamera tidak tersedia", "rejected");
-    renderWizard();
-  });
+  // Everyone lands on the home screen and picks an action. Auto-entering
+  // attendance mode put a live camera overlay on top of the landing page and
+  // triggered the browser's permission prompt before the visitor asked for
+  // anything — each mode now acquires the camera when it is actually chosen.
+  showHomeScreen();
 })();
 

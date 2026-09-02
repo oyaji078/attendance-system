@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, time
+from datetime import date, datetime, time
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, DateTime, Float, ForeignKey, Index, Integer, String, Text, Time, UniqueConstraint, func, text
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, Time, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -18,6 +18,7 @@ class Person(Base):
     student_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
     class_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("classes.id", ondelete="SET NULL"), nullable=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", index=True)
@@ -59,12 +60,17 @@ class Lecturer(Base):
     full_name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     department: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "Golongan" on the Indonesian civil-service scale (e.g. "III/b"). Free text:
+    # private schools use their own grading letters.
+    rank_grade: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     classes: Mapped[list["ClassGroup"]] = relationship(back_populates="lecturer")
     sessions: Mapped[list["AttendanceSession"]] = relationship(back_populates="lecturer")
+    schedules: Mapped[list["ClassSchedule"]] = relationship(back_populates="lecturer")
 
 
 class ClassGroup(Base):
@@ -82,6 +88,7 @@ class ClassGroup(Base):
     lecturer: Mapped["Lecturer | None"] = relationship(back_populates="classes")
     students: Mapped[list["Person"]] = relationship(back_populates="class_group")
     sessions: Mapped[list["AttendanceSession"]] = relationship(back_populates="class_group")
+    schedules: Mapped[list["ClassSchedule"]] = relationship(back_populates="class_group")
 
 
 class DeviceConfig(Base):
@@ -215,3 +222,188 @@ class AttendanceLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
     session: Mapped["AttendanceSession | None"] = relationship(back_populates="logs")
+
+
+
+class StudentEnrollment(Base):
+    """Siswa <-> Kelas with a status and a start date.
+
+    ``Person.class_id`` remains the fast path every existing query uses and is
+    kept in sync with the one ``active`` row here; this table adds the history
+    (which class before, since when) that the redesigned pages show.
+    """
+
+    __tablename__ = "student_enrollments"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'inactive')", name="ck_student_enrollments_status"),
+        Index(
+            "uq_student_enrollments_one_active",
+            "person_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    person_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("persons.id", ondelete="CASCADE"), index=True)
+    class_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    start_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    end_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class Subject(Base):
+    """Mata pelajaran. Kept separate from ``ClassGroup`` so one class can be
+    taught several subjects, each by its own lecturer, without duplicating the
+    class or its student roster."""
+
+    __tablename__ = "subjects"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subject_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    subject_name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    schedules: Mapped[list["ClassSchedule"]] = relationship(back_populates="subject")
+
+
+class ClassSchedule(Base):
+    """Jadwal: one class + subject + lecturer for one academic term.
+
+    ``total_meetings`` is stored per schedule rather than hardcoded to 12, so a
+    short term or an extended one is a data change, not a code change.
+    """
+
+    __tablename__ = "class_schedules"
+    __table_args__ = (
+        CheckConstraint("semester IN ('ganjil', 'genap')", name="ck_class_schedules_semester"),
+        CheckConstraint("total_meetings BETWEEN 1 AND 60", name="ck_class_schedules_total_meetings"),
+        CheckConstraint(
+            "day_of_week IS NULL OR day_of_week IN "
+            "('monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday')",
+            name="ck_class_schedules_day_of_week",
+        ),
+        UniqueConstraint(
+            "class_id",
+            "subject_id",
+            "academic_year",
+            "semester",
+            name="uq_class_schedules_class_subject_term",
+        ),
+        Index(
+            "uq_class_schedules_attendance_session",
+            "attendance_session_id",
+            unique=True,
+            postgresql_where=text("attendance_session_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schedule_code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    class_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    subject_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("subjects.id", ondelete="CASCADE"), index=True)
+    lecturer_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("lecturers.id", ondelete="SET NULL"), nullable=True, index=True)
+    academic_year: Mapped[str] = mapped_column(String(16), index=True)
+    semester: Mapped[str] = mapped_column(String(16), index=True)
+    day_of_week: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    start_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    end_time: Mapped[time | None] = mapped_column(Time, nullable=True)
+    total_meetings: Mapped[int] = mapped_column(Integer, default=12, server_default="12")
+    room: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The kiosk session this jadwal owns. "Sesi Absensi" and "Jadwal" describe
+    # the same class hour, so the jadwal row manages both.
+    attendance_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("attendance_sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    class_group: Mapped["ClassGroup"] = relationship(back_populates="schedules")
+    subject: Mapped["Subject"] = relationship(back_populates="schedules")
+    lecturer: Mapped["Lecturer | None"] = relationship(back_populates="schedules")
+    meetings: Mapped[list["ScheduleMeeting"]] = relationship(back_populates="schedule", cascade="all, delete-orphan")
+
+
+class ScheduleMeeting(Base):
+    """Pertemuan ke-N of a schedule.
+
+    ``status`` decides the attendance denominator: only ``held`` meetings count
+    toward "pertemuan yang sudah dilaksanakan", so a term that is half over does
+    not report every student as half absent.
+    """
+
+    __tablename__ = "schedule_meetings"
+    __table_args__ = (
+        CheckConstraint("status IN ('planned', 'held', 'cancelled')", name="ck_schedule_meetings_status"),
+        CheckConstraint("meeting_number >= 1", name="ck_schedule_meetings_number"),
+        UniqueConstraint("schedule_id", "meeting_number", name="uq_schedule_meetings_schedule_number"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    schedule_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("class_schedules.id", ondelete="CASCADE"), index=True)
+    meeting_number: Mapped[int] = mapped_column(Integer)
+    meeting_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    topic: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="planned", server_default="planned", index=True)
+    # Optional bridge to the face-recognition kiosk: when set, meeting attendance
+    # can be prefilled from accepted attendance_logs of that session.
+    attendance_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("attendance_sessions.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    schedule: Mapped["ClassSchedule"] = relationship(back_populates="meetings")
+    records: Mapped[list["AttendanceRecord"]] = relationship(back_populates="meeting", cascade="all, delete-orphan")
+
+
+class AttendanceRecord(Base):
+    """One student's H/S/I/A for one meeting.
+
+    The unique constraint is the whole point: re-saving Pertemuan 1 updates the
+    same rows instead of appending, and Pertemuan 2 can never overwrite them.
+    """
+
+    __tablename__ = "attendance_records"
+    __table_args__ = (
+        CheckConstraint("status IN ('H', 'S', 'I', 'A')", name="ck_attendance_records_status"),
+        CheckConstraint("source IN ('manual', 'face')", name="ck_attendance_records_source"),
+        UniqueConstraint("meeting_id", "person_id", name="uq_attendance_records_meeting_person"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    meeting_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("schedule_meetings.id", ondelete="CASCADE"), index=True)
+    person_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("persons.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(1), index=True)
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source: Mapped[str] = mapped_column(String(16), default="manual", server_default="manual")
+    # How well the face matched when the camera recorded this row: a copy of
+    # ``attendance_logs.confidence`` (0..1) taken at the moment of the scan, so
+    # the figure the console shows stays the one the decision was made on even
+    # after the template is re-enrolled. NULL for anything entered by hand.
+    match_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    recorded_by_admin_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("admin_users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    meeting: Mapped["ScheduleMeeting"] = relationship(back_populates="records")
+
+
+class AppSetting(Base):
+    """Console-level key/value preferences (school name, default period)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

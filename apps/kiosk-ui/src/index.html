@@ -4,14 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kios Kehadiran Kampus</title>
+    <!-- Inline so the kiosk stops requesting /favicon.ico, which 404s. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E%F0%9F%8E%93%3C/text%3E%3C/svg%3E" />
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./console/console.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
   </head>
   <body>
     <main id="app" class="app-shell" data-enrollment-state="idle" data-screen="home">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Kehadiran Kampus</p>
-          <h1> Hikam ATTANDANCE</h1>
+          <p class="eyebrow">Kehadiran kelas</p>
+          <h1> ABSENSI SMPN 1 Selong</h1>
         </div>
         <div class="topbar-actions">
           <span id="auto-status" class="status-pill idle">Kamera dimulai</span>
@@ -62,31 +68,8 @@
         </form>
       </section>
 
-      <section id="admin-screen" class="admin-screen is-hidden">
-        <aside class="admin-sidebar">
-          <p class="eyebrow">Panel Admin</p>
-          <button class="admin-nav is-active" data-admin-view="dashboard" type="button">Dashboard</button>
-          <button class="admin-nav" data-admin-view="students" type="button">Mahasiswa</button>
-          <button class="admin-nav" data-admin-view="lecturers" type="button">Dosen</button>
-          <button class="admin-nav" data-admin-view="users" type="button">Akun Login</button>
-          <button class="admin-nav" data-admin-view="classes" type="button">Kelas</button>
-          <button class="admin-nav" data-admin-view="enrollment" type="button">Enrollment</button>
-          <button class="admin-nav" data-admin-view="sessions" type="button">Sesi Absensi</button>
-          <button class="admin-nav" data-admin-view="logs" type="button">Log Absensi</button>
-          <button class="admin-nav" data-admin-view="devices" type="button">Perangkat</button>
-        </aside>
-        <section class="admin-content">
-          <div class="admin-content-head">
-            <div>
-              <p id="admin-eyebrow" class="eyebrow">Dashboard</p>
-              <h2 id="admin-title">Ringkasan Sistem</h2>
-            </div>
-            <button id="admin-primary-action" type="button">Tambah Data</button>
-          </div>
-          <div id="admin-alert" class="form-error is-hidden"></div>
-          <div id="admin-content-body"></div>
-        </section>
-      </section>
+      <!-- The redesigned admin console renders itself in here (./console/app.js). -->
+      <section id="admin-screen" class="admin-screen is-hidden"></section>
 
       <div id="identity-modal" class="identity-modal is-hidden" role="dialog" aria-modal="true" aria-labelledby="identity-title">
         <div class="modal-backdrop"></div>
@@ -249,11 +232,6 @@
             <p class="eyebrow">Mode Absensi</p>
             <h2>Status absensi</h2>
           </div>
-          <p class="copy" id="attendance-session-copy">Memuat sesi absensi...</p>
-          <label id="attendance-session-picker" class="session-picker is-hidden">
-            <span>Pilih sesi absensi</span>
-            <select id="attendance-session-select"></select>
-          </label>
           <section id="attendance-result-card" class="attendance-result-card is-hidden" aria-live="polite">
             <div class="attendance-photo-wrap">
               <img id="attendance-photo" alt="" />
@@ -293,6 +271,17 @@
           </div>
         </div>
 
+        <!-- Lives outside .recognition-card: that card is display:none on the
+             attendance screen, which would make the picker unreachable when the
+             operator has more than one class or session to choose from. -->
+        <div id="attendance-picker-overlay" class="attendance-picker-overlay is-hidden">
+          <p class="copy" id="attendance-session-copy">Memuat sesi absensi...</p>
+          <label id="attendance-session-picker" class="session-picker is-hidden">
+            <span>Pilih sesi absensi</span>
+            <select id="attendance-session-select"></select>
+          </label>
+        </div>
+
         <div id="attendance-toast" class="attendance-toast is-hidden" role="status" aria-live="polite">
           <span id="attendance-toast-icon" class="attendance-toast-icon"></span>
           <span id="attendance-toast-text" class="attendance-toast-text"></span>
@@ -310,7 +299,7 @@
 
       <details class="device-panel">
         <summary>Status perangkat</summary>
-        <pre id="status">memulai</pre>
+        <dl id="status" class="device-status"><p class="device-status-empty">Belum ada data perangkat.</p></dl>
       </details>
     </main>
     <div id="photo-lightbox" class="photo-lightbox" role="dialog" aria-modal="true" aria-label="Foto wajah">

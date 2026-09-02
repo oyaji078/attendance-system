@@ -80,8 +80,13 @@ impl LocalQueue {
     }
 
     pub fn backoff_for(&self, retry_count: u32) -> Duration {
-        let ms = self.config.base_backoff_ms.saturating_mul(1u64.saturating_pow(retry_count));
-        let jitter = fastrand::u64(0..ms.saturating_div(2));
+        // 2^retry_count, not 1^retry_count: the latter is always 1, which made
+        // every retry wait the base delay instead of backing off.
+        let ms = self.config.base_backoff_ms.saturating_mul(2u64.saturating_pow(retry_count));
+        let half = ms / 2;
+        // fastrand::u64 panics on an empty range, so a zero delay — which a
+        // base_backoff_ms of 0 produces — would take the whole agent down.
+        let jitter = if half == 0 { 0 } else { fastrand::u64(0..half) };
         Duration::from_millis((ms + jitter).min(self.config.max_backoff_ms))
     }
 
@@ -163,12 +168,15 @@ mod tests {
     fn test_backoff_exponential() {
         let config = QueueConfig { base_backoff_ms: 100, max_backoff_ms: 10_000, max_retries: 5, ..Default::default() };
         let q = LocalQueue::new(config);
+        // delay = base * 2^retry, plus jitter drawn from [0, delay/2).
+        // The old `b1 <= 200` bound only held while backoff was accidentally
+        // constant, and contradicted the `b2 >= 400` bound just below it.
         let b0 = q.backoff_for(0).as_millis();
         let b1 = q.backoff_for(1).as_millis();
         let b2 = q.backoff_for(2).as_millis();
-        assert!(b0 >= 100 && b0 <= 150);
-        assert!(b1 >= 100 && b1 <= 200);
-        assert!(b2 >= 400 && b2 <= 600);
+        assert!((100..150).contains(&b0), "b0 = {b0}");
+        assert!((200..300).contains(&b1), "b1 = {b1}");
+        assert!((400..600).contains(&b2), "b2 = {b2}");
     }
 
     #[test]

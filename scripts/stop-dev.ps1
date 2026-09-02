@@ -35,5 +35,12 @@ $apiProcesses = @(Get-ListeningPortProcesses -Port 8000)
 $kioskProcesses = @(Get-ListeningPortProcesses -Port 8080)
 Write-Host "API port 8000 listeners: $($apiProcesses.Count)"
 Write-Host "Kiosk port 8080 listeners: $($kioskProcesses.Count)"
+
+if ($apiProcesses.Count -gt 0 -or $kioskProcesses.Count -gt 0) {
+    Write-Host 'A forced cleanup was attempted; if a listener still remains, run:' -ForegroundColor Yellow
+    Write-Host '  netstat -ano | findstr :8000' -ForegroundColor Yellow
+    Write-Host '  netstat -ano | findstr :8080' -ForegroundColor Yellow
+}
+
 & docker ps --filter 'name=docker-postgres-1' --filter 'name=docker-redis-1' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 

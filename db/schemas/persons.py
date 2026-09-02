@@ -10,6 +10,7 @@ class PersonCreateRequest(BaseModel):
     student_id: str = Field(min_length=1, max_length=64)
     full_name: str = Field(min_length=1, max_length=255)
     email: str | None = Field(default=None, max_length=255)
+    address: str | None = None
     class_id: UUID | None = None
     is_active: bool = False
 
@@ -18,6 +19,7 @@ class PersonUpdateRequest(BaseModel):
     student_id: str = Field(min_length=1, max_length=64)
     full_name: str = Field(min_length=1, max_length=255)
     email: str | None = Field(default=None, max_length=255)
+    address: str | None = None
     class_id: UUID | None = None
 
 
@@ -26,6 +28,7 @@ class PersonRead(BaseModel):
     student_id: str
     full_name: str
     email: str | None
+    address: str | None = None
     class_id: UUID | None
     class_code: str | None = None
     class_name: str | None = None

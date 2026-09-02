@@ -119,7 +119,10 @@ class AttendanceSessionService:
         return {"status": "deleted", "logs": total_logs, "deleted": deleted}
 
     async def next_session_code(self, starts_at: datetime | None = None) -> str:
-        timestamp = (starts_at or datetime.now().astimezone()).astimezone()
+        # Stamp the code in WITA, the timezone every schedule is evaluated in.
+        # Machine-local time (WIB on this host) put an hour-off clock into the
+        # code, which reads as a contradiction next to the session's own hours.
+        timestamp = (starts_at or datetime.now(timezone.utc)).astimezone(WITA_TZ)
         prefix = f"ABS-{timestamp:%y%m%d-%H%M}"
         next_number = 1
         while next_number <= 9999:

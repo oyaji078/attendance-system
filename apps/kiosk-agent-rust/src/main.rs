@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = tick_interval.tick() => {
-                run_tick(&config, &client, &frame_source, &mut queue).await;
+                run_tick(&config, &client, frame_source.as_ref(), &mut queue).await;
             }
             _ = shutdown_signal() => {
                 info!("kiosk_agent_shutdown queue_depth={}", queue.len());
@@ -63,21 +63,30 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Upper bound on sends per tick. Without it a tick could run for minutes after
+/// an outage; with only one send per tick the queue could never shrink, because
+/// every tick also enqueues a fresh frame.
+const MAX_SENDS_PER_TICK: usize = 8;
+
 async fn run_tick(config: &AgentConfig, client: &BackendClient, frame_source: &dyn FrameSource, queue: &mut LocalQueue) {
-    heartbeat(client, config).await;
+    heartbeat(client, config, queue.len()).await;
 
     capture_and_enqueue(config, frame_source, queue).await;
 
-    if let Some(mut item) = queue.pop_ready() {
+    for _ in 0..MAX_SENDS_PER_TICK {
+        let Some(item) = queue.pop_ready() else { break };
         match client.recognize(&item.request).await {
             Ok(()) => {
-                info!("recognize_sent");
+                info!("recognize_sent queue_depth={}", queue.len());
             }
             Err(error) => {
                 error!("recognize_failed retry={}/{} error={error}", item.retry_count + 1, config.max_retries);
                 if !queue.push_back(item) {
                     warn!("recognize_dropped max_retries_exceeded_or_queue_full");
                 }
+                // Back off the whole tick rather than hammering a backend that
+                // just failed; the next tick retries.
+                break;
             }
         }
     }
@@ -88,11 +97,12 @@ async fn run_tick(config: &AgentConfig, client: &BackendClient, frame_source: &d
     }
 }
 
-async fn heartbeat(client: &BackendClient, config: &AgentConfig) {
+async fn heartbeat(client: &BackendClient, config: &AgentConfig, queue_depth: usize) {
     let payload = DeviceHeartbeat {
         device_code: config.device_code.clone(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
-        queue_depth: 0,
+        // Was hardcoded to 0, so a backlogged agent still looked healthy.
+        queue_depth,
         captured_at: Utc::now().to_rfc3339(),
     };
     if let Err(error) = client.heartbeat(&payload).await {
@@ -113,7 +123,14 @@ async fn capture_and_enqueue(config: &AgentConfig, frame_source: &dyn FrameSourc
         }
     };
     let brightness = average_brightness(&frame_bytes).unwrap_or(0.0);
-    if heuristic_score(brightness) < config.liveness_threshold {
+    let liveness = heuristic_score(brightness);
+    if liveness < config.liveness_threshold {
+        // Silently dropping these made "nothing is being sent" impossible to
+        // diagnose in the field.
+        info!(
+            "frame_rejected reason=liveness_below_threshold score={liveness:.2} threshold={:.2} brightness={brightness:.1}",
+            config.liveness_threshold
+        );
         return;
     }
     let frame_b64 = STANDARD.encode(&frame_bytes);
@@ -129,7 +146,7 @@ async fn capture_and_enqueue(config: &AgentConfig, frame_source: &dyn FrameSourc
 
 async fn drain_queue(client: &BackendClient, queue: &mut LocalQueue) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while let Some(mut item) = queue.pop_ready() {
+    while let Some(item) = queue.pop_ready() {
         if tokio::time::Instant::now() >= deadline {
             warn!("drain_timeout remaining={}", queue.len());
             break;
@@ -152,15 +169,26 @@ async fn drain_queue(client: &BackendClient, queue: &mut LocalQueue) {
     }
 }
 
+#[cfg(unix)]
 async fn shutdown_signal() {
-    let ctrl_c = signal::ctrl_c();
-    #[cfg(unix)]
-    let term = signal::unix::signal(signal::unix::SignalKind::terminate());
-    #[cfg(unix)]
+    // `signal(..)` returns a Result whose Ok value is the stream; the previous
+    // `term.ok()` handed select! an Option, which is not a future and so never
+    // compiled on Unix at all.
+    let mut term = match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+        Ok(stream) => stream,
+        Err(error) => {
+            warn!("sigterm_handler_unavailable: {error}");
+            signal::ctrl_c().await.ok();
+            return;
+        }
+    };
     tokio::select! {
-        _ = ctrl_c => {}
-        _ = term.ok() => {}
+        _ = signal::ctrl_c() => {}
+        _ = term.recv() => {}
     }
-    #[cfg(not(unix))]
-    ctrl_c.await.ok();
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() {
+    signal::ctrl_c().await.ok();
 }

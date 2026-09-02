@@ -4,7 +4,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.core.dependencies import get_attendance_read_service, get_attendance_session_service, get_recognition_service
+from app.core.dependencies import (
+    get_attendance_read_service,
+    get_attendance_session_service,
+    get_current_admin_user,
+    get_recognition_service,
+)
 from app.core.rate_limiter import rate_limit_attendance_dependency
 from db.schemas.attendance import (
     AttendanceCheckinRequest,
@@ -94,7 +99,13 @@ async def active_attendance_sessions(service: AttendanceSessionService = Depends
 
 
 @router.get("/attendance/logs/{session_code}", response_model=AttendanceLogsResponse)
-async def attendance_logs(session_code: str, service: AttendanceReadService = Depends(get_attendance_read_service)) -> AttendanceLogsResponse:
+async def attendance_logs(
+    session_code: str,
+    service: AttendanceReadService = Depends(get_attendance_read_service),
+    _: object = Depends(get_current_admin_user),
+) -> AttendanceLogsResponse:
+    """Roster of a session. Requires a signed-in account: it carries names and
+    student IDs, and the kiosk origin is publicly reachable."""
     return await service.logs(session_code)
 
 
@@ -132,7 +143,10 @@ async def session_today_logs(
     session_id: str,
     timezone: str = "Asia/Makassar",
     service: AttendanceReadService = Depends(get_attendance_read_service),
+    _: object = Depends(get_current_admin_user),
 ):
+    """Today's roster for a session. Authenticated for the same reason as
+    ``/attendance/logs/{session_code}`` — it returns identifiable students."""
     try:
         sid = UUID(session_id)
     except ValueError:

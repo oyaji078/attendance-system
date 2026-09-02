@@ -27,6 +27,29 @@ class AttendanceLogAdminRead(BaseModel):
     created_at: datetime
 
 
+class AttendanceMatrixColumn(BaseModel):
+    session_id: UUID | None
+    session_code: str | None
+    session_name: str | None
+    date: datetime | None
+    label: str
+
+
+class AttendanceMatrixRow(BaseModel):
+    student_id: str
+    full_name: str
+    cells: list[bool]
+
+
+class ClassAttendanceMatrixResponse(BaseModel):
+    class_id: UUID
+    class_code: str
+    class_name: str
+    columns: list[AttendanceMatrixColumn]
+    rows: list[AttendanceMatrixRow]
+    student_count: int
+
+
 class AttendanceLogListResponse(BaseModel):
     items: list[AttendanceLogAdminRead]
     total: int = 0

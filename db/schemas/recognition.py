@@ -81,6 +81,13 @@ class RecognitionResponse(BaseModel):
     confidence: float | None = None
     resolved_session: ResolvedAttendanceSession | None = None
     session_resolution: str | None = None
+    # Populated only when session_resolution == "multiple_matching_sessions":
+    # the kiosk needs the candidates to let the operator pick one.
+    matching_sessions: list[ResolvedAttendanceSession] = Field(default_factory=list)
+    # session_code -> single-use confirm token, one per candidate above. Confirm
+    # rejects a bare person/session pair, so an ambiguous match still needs a
+    # token ready for whichever session the operator picks.
+    matching_session_tokens: dict[str, str] = Field(default_factory=dict)
     top_candidates: list[CandidateSummary] = Field(default_factory=list)
     top1_distance: float | None = None
     top2_distance: float | None = None

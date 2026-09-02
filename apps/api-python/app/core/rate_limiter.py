@@ -93,7 +93,7 @@ async def _enforce_device_scoped_limit(
     window_seconds: int,
     detail: str,
 ) -> None:
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_for(request)
     device_code = await _request_device_code(request)
     limiter = _build_rate_limiter(request, max_attempts, window_seconds)
     primary_key = f"{scope}:device:{device_code}" if device_code else f"{scope}:{client_ip}"
@@ -107,11 +107,27 @@ async def _enforce_device_scoped_limit(
             raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=detail)
 
 
+def client_ip_for(request: Request) -> str:
+    """The address rate limits are counted against.
+
+    Reads X-Forwarded-For only when ``TRUST_PROXY_HEADERS`` is on, because an
+    untrusted client can set that header to any value it likes.
+    """
+    from app.core.config import get_settings
+
+    direct = request.client.host if request.client else "unknown"
+    if not get_settings().trust_proxy_headers:
+        return direct
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    first_hop = forwarded.split(",")[0].strip()
+    return first_hop or direct
+
+
 async def rate_limit_login_dependency(request: Request) -> None:
     from app.core.config import get_settings
 
     settings = get_settings()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_for(request)
     limiter = _build_rate_limiter(request, settings.login_rate_limit_max, settings.login_rate_limit_window_seconds)
     if not await _async_is_allowed(limiter, f"ip:{client_ip}"):
         LOGGER.warning("rate_limit_exceeded", extra={"client_ip": client_ip, "key_type": "ip"})
@@ -138,7 +154,7 @@ async def rate_limit_enrollment_dependency(request: Request) -> None:
     from app.core.config import get_settings
 
     settings = get_settings()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_for(request)
     limiter = _build_rate_limiter(request, settings.enrollment_rate_limit_max, settings.enrollment_rate_limit_window_seconds)
     if not await _async_is_allowed(limiter, f"enrollment:{client_ip}"):
         LOGGER.warning("rate_limit_exceeded", extra={"client_ip": client_ip, "key_type": "enrollment"})

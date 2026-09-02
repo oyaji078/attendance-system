@@ -36,3 +36,12 @@ foreach ($port in @(8000, 8080, 8081, 5432, 6379)) {
     Write-Host "Port $port listeners: $($listeners.Count)"
 }
 
+if ($All) {
+    foreach ($port in @(8000, 8080)) {
+        $listeners = @(Get-ListeningPortProcesses -Port $port)
+        if ($listeners.Count -gt 0) {
+            Write-Host "Port $port still has listeners after stopping tunnels." -ForegroundColor Yellow
+        }
+    }
+}
+

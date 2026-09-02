@@ -12,6 +12,9 @@ class LecturerWrite(BaseModel):
     full_name: str = Field(min_length=1, max_length=255)
     email: str | None = Field(default=None, max_length=255)
     department: str | None = Field(default=None, max_length=255)
+    address: str | None = None
+    # "Golongan" (civil-service grade), free text: private schools use their own.
+    rank_grade: str | None = Field(default=None, max_length=64)
     is_active: bool = True
 
 

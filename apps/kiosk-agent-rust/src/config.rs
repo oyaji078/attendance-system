@@ -28,7 +28,8 @@ where
 
 impl AgentConfig {
     pub fn from_env() -> Self {
-        let frame_source = if let Ok(index) = env::var("CAMERA_INDEX").ok().and_then(|v| v.parse::<u32>().ok()) {
+        let camera_index = env::var("CAMERA_INDEX").ok().and_then(|v| v.parse::<u32>().ok());
+        let frame_source = if let Some(index) = camera_index {
             #[cfg(feature = "camera")]
             {
                 FrameSourceKind::Camera {

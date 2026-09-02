@@ -28,7 +28,13 @@ async def login(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc)) from exc
     token = service.create_token(user)
     container = get_container(http_request)
-    secure_cookie = service.settings.app_env == "production"
+    # Secure has to follow the actual request scheme, not APP_ENV: the documented
+    # way to demo this app is a public Cloudflare HTTPS tunnel while APP_ENV is
+    # still "development", and keying off the env alone shipped the session
+    # cookie over that tunnel without the Secure flag.
+    forwarded_proto = (http_request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    is_https = forwarded_proto == "https" or http_request.url.scheme == "https"
+    secure_cookie = is_https or service.settings.app_env == "production"
     response.set_cookie(
         "admin_session",
         token,

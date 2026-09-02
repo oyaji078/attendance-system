@@ -1,0 +1,1504 @@
+/* ===========================================================================
+   Academic Console — design system
+   ---------------------------------------------------------------------------
+   Everything is namespaced under `.aps` so the kiosk screens (camera, enrolment,
+   Mode Absensi) keep their own styles untouched. One brand colour carries the
+   identity; every other colour is semantic (success / warning / danger / neutral)
+   so a status never depends on decoration to be read.
+   ======================================================================== */
+
+.aps {
+  /* --- brand + neutrals ------------------------------------------------ */
+  --c-brand: #0f766e;
+  --c-brand-strong: #0b5f59;
+  --c-brand-soft: #e6f5f3;
+  --c-brand-ring: rgba(15, 118, 110, 0.22);
+
+  --c-ink: #0f172a;
+  --c-body: #334155;
+  --c-muted: #64748b;
+  --c-faint: #94a3b8;
+
+  --c-surface: #ffffff;
+  --c-surface-2: #f8fafc;
+  --c-surface-3: #f1f5f9;
+  --c-canvas: #f6f8fa;
+  --c-line: #e2e8f0;
+  --c-line-strong: #cbd5e1;
+
+  /* --- semantic -------------------------------------------------------- */
+  --c-success: #0f7b46;
+  --c-success-soft: #e7f6ee;
+  --c-warning: #a4650a;
+  --c-warning-soft: #fdf3e2;
+  --c-danger: #b42318;
+  --c-danger-soft: #fdeceb;
+  --c-info: #1d4ed8;
+  --c-info-soft: #e8eefc;
+
+  /* --- spacing scale (4px base) ---------------------------------------- */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+
+  /* --- type ------------------------------------------------------------ */
+  --f-sans: "Inter", "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  --t-xs: 0.6875rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.875rem;
+  --t-md: 1rem;
+  --t-lg: 1.125rem;
+  --t-xl: 1.375rem;
+
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-full: 999px;
+
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-2: 0 4px 16px rgba(15, 23, 42, 0.08);
+  --shadow-3: 0 16px 48px rgba(15, 23, 42, 0.18);
+
+  --sidebar-w: 240px;
+  --header-h: 60px;
+
+  font-family: var(--f-sans);
+  font-size: var(--t-base);
+  color: var(--c-body);
+  background: var(--c-canvas);
+}
+
+/* The console owns the viewport while it is on screen; the kiosk chrome steps
+   aside so the sidebar and header can be the only fixed elements. */
+.app-shell[data-screen="admin"] {
+  padding: 0;
+  gap: 0;
+}
+
+.app-shell[data-screen="admin"] > .topbar,
+.app-shell[data-screen="admin"] > .device-panel {
+  display: none;
+}
+
+/* Shell layout is its own class. `.aps` stays a pure token scope so overlays
+   (menu, dialog, drawer, toasts) can carry it without becoming full-height flex
+   containers. */
+.aps-shell {
+  display: flex;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* --------------------------------------------------------------------------
+   Sidebar — fixed, never scrolls with the content
+   ----------------------------------------------------------------------- */
+
+.aps-sidebar {
+  flex: 0 0 var(--sidebar-w);
+  width: var(--sidebar-w);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--c-surface);
+  border-right: 1px solid var(--c-line);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.aps-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  height: var(--header-h);
+  padding: 0 var(--s-4);
+  border-bottom: 1px solid var(--c-line);
+  flex: 0 0 auto;
+}
+
+.aps-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--r-md);
+  background: var(--c-brand);
+  color: #fff;
+  font-weight: 700;
+  font-size: var(--t-sm);
+  flex: 0 0 auto;
+}
+
+.aps-brand-text {
+  min-width: 0;
+}
+
+.aps-brand-text strong {
+  display: block;
+  font-size: var(--t-base);
+  color: var(--c-ink);
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aps-brand-text span {
+  font-size: var(--t-xs);
+  color: var(--c-faint);
+}
+
+.aps-nav {
+  padding: var(--s-3) var(--s-2) var(--s-6);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.aps-nav-group {
+  margin-top: var(--s-4);
+  padding: 0 var(--s-3) var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--c-faint);
+}
+
+.aps-nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  min-height: 38px;
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-body);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.aps-nav-item:hover {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+.aps-nav-item[aria-current="page"] {
+  background: var(--c-brand-soft);
+  color: var(--c-brand-strong);
+  font-weight: 600;
+}
+
+.aps-nav-item .aps-ico {
+  flex: 0 0 auto;
+  opacity: 0.75;
+}
+
+.aps-nav-item[aria-current="page"] .aps-ico {
+  opacity: 1;
+}
+
+.aps-nav-sub {
+  margin-left: var(--s-6);
+}
+
+.aps-nav-sub .aps-nav-item {
+  min-height: 32px;
+  font-size: var(--t-sm);
+}
+
+/* --------------------------------------------------------------------------
+   Main column — fixed header, scrollable content
+   ----------------------------------------------------------------------- */
+
+.aps-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.aps-header {
+  flex: 0 0 auto;
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: 0 var(--s-6);
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-line);
+  z-index: 20;
+}
+
+.aps-header-title {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.aps-header-title h1 {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 650;
+  color: var(--c-ink);
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aps-crumb {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--c-faint);
+}
+
+.aps-crumb button {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--c-brand);
+  cursor: pointer;
+}
+
+.aps-crumb button:hover {
+  text-decoration: underline;
+}
+
+.aps-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 0 0 auto;
+}
+
+.aps-user {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding-left: var(--s-3);
+  border-left: 1px solid var(--c-line);
+  color: var(--c-muted);
+  font-size: var(--t-sm);
+}
+
+.aps-avatar {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-full);
+  background: var(--c-surface-3);
+  color: var(--c-body);
+  font-size: var(--t-xs);
+  font-weight: 700;
+}
+
+.aps-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--s-6);
+  scroll-behavior: smooth;
+}
+
+.aps-page {
+  max-width: 1360px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+/* --------------------------------------------------------------------------
+   Toolbar — primary action + search on one line, filters on their own
+   ----------------------------------------------------------------------- */
+
+.aps-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+
+.aps-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.aps-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding: var(--s-3) var(--s-4);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+}
+
+.aps-filters-label {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--c-faint);
+}
+
+.aps-field {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  color: var(--c-muted);
+}
+
+.aps-field > span {
+  white-space: nowrap;
+}
+
+.aps-field--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s-1);
+}
+
+.aps-field--stack > span {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--c-muted);
+}
+
+/* --------------------------------------------------------------------------
+   Controls
+   ----------------------------------------------------------------------- */
+
+.aps input[type="text"],
+.aps input[type="search"],
+.aps input[type="date"],
+.aps input[type="time"],
+.aps input[type="number"],
+.aps input[type="email"],
+.aps input[type="password"],
+.aps select,
+.aps textarea {
+  min-height: 36px;
+  padding: 0 var(--s-3);
+  border: 1px solid var(--c-line-strong);
+  border-radius: var(--r-md);
+  background: var(--c-surface);
+  color: var(--c-ink);
+  font: inherit;
+  font-size: var(--t-sm);
+}
+
+.aps textarea {
+  padding: var(--s-2) var(--s-3);
+  min-height: 76px;
+  resize: vertical;
+}
+
+.aps input:focus-visible,
+.aps select:focus-visible,
+.aps textarea:focus-visible,
+.aps button:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 1px;
+}
+
+.aps input::placeholder {
+  color: var(--c-faint);
+}
+
+.aps-search {
+  position: relative;
+  flex: 0 1 300px;
+  min-width: 200px;
+}
+
+/* `.aps input[type="search"]` above is more specific than `.aps-search input`,
+   so its shorthand `padding` was overriding this and the icon sat on top of the
+   first character. Match that specificity to win the cascade. */
+.aps .aps-search input[type="search"] {
+  width: 100%;
+  padding-left: 32px;
+}
+
+.aps-search .aps-ico {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--c-faint);
+  pointer-events: none;
+}
+
+.aps-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  min-height: 36px;
+  padding: 0 var(--s-4);
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: var(--c-brand);
+  color: #fff;
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.aps-btn:hover {
+  background: var(--c-brand-strong);
+}
+
+.aps-btn[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.aps-btn--ghost {
+  background: var(--c-surface);
+  border-color: var(--c-line-strong);
+  color: var(--c-body);
+}
+
+.aps-btn--ghost:hover {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+.aps-btn--quiet {
+  background: transparent;
+  color: var(--c-muted);
+}
+
+.aps-btn--quiet:hover {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+.aps-btn--danger {
+  background: var(--c-danger);
+}
+
+.aps-btn--danger:hover {
+  background: #96190f;
+}
+
+.aps-btn--sm {
+  min-height: 30px;
+  padding: 0 var(--s-3);
+  font-size: var(--t-xs);
+}
+
+.aps-iconbtn {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--c-muted);
+  cursor: pointer;
+}
+
+.aps-iconbtn:hover {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+/* --------------------------------------------------------------------------
+   Cards / sections
+   ----------------------------------------------------------------------- */
+
+.aps-card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.aps-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-5);
+  border-bottom: 1px solid var(--c-line);
+}
+
+.aps-card-head h2 {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 650;
+  color: var(--c-ink);
+}
+
+.aps-card-head p {
+  margin: 2px 0 0;
+  font-size: var(--t-sm);
+  color: var(--c-muted);
+}
+
+.aps-card-body {
+  padding: var(--s-5);
+}
+
+.aps-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s-4);
+}
+
+.aps-stat {
+  padding: var(--s-4) var(--s-5);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.aps-stat dt {
+  font-size: var(--t-sm);
+  color: var(--c-muted);
+  font-weight: 500;
+}
+
+.aps-stat dd {
+  margin: var(--s-2) 0 0;
+  font-size: 1.75rem;
+  font-weight: 650;
+  color: var(--c-ink);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.aps-stat small {
+  display: block;
+  margin-top: var(--s-1);
+  font-size: var(--t-xs);
+  color: var(--c-faint);
+}
+
+/* --------------------------------------------------------------------------
+   Table — sticky header, sticky identity columns, no pagination
+   ----------------------------------------------------------------------- */
+
+.aps-tablewrap {
+  position: relative;
+  overflow: auto;
+  max-height: calc(100vh - var(--header-h) - 190px);
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.aps-tablewrap--tall {
+  max-height: calc(100vh - var(--header-h) - 120px);
+}
+
+.aps-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--t-sm);
+}
+
+.aps-table th,
+.aps-table td {
+  padding: var(--s-3) var(--s-4);
+  text-align: left;
+  border-bottom: 1px solid var(--c-line);
+  white-space: nowrap;
+}
+
+.aps-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--c-line-strong);
+}
+
+.aps-table tbody tr:hover td {
+  background: var(--c-surface-2);
+}
+
+.aps-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.aps-table td.aps-num,
+.aps-table th.aps-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.aps-table td.aps-center,
+.aps-table th.aps-center {
+  text-align: center;
+}
+
+.aps-table .aps-strong {
+  color: var(--c-ink);
+  font-weight: 600;
+}
+
+.aps-table .aps-sub {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--c-faint);
+  font-weight: 400;
+}
+
+.aps-table td.aps-actions {
+  width: 48px;
+  text-align: right;
+  padding-right: var(--s-3);
+}
+
+/* Identity columns stay put while the meeting columns scroll under them. */
+.aps-table .aps-sticky-1,
+.aps-table .aps-sticky-2,
+.aps-table .aps-sticky-3 {
+  position: sticky;
+  z-index: 2;
+  background: var(--c-surface);
+}
+
+.aps-table thead .aps-sticky-1,
+.aps-table thead .aps-sticky-2,
+.aps-table thead .aps-sticky-3 {
+  z-index: 4;
+  background: var(--c-surface-2);
+}
+
+/* Fixed widths, because the offsets below have to match them exactly — a
+   guessed offset lets the next sticky column paint over the previous one. */
+.aps-table .aps-sticky-1 {
+  left: 0;
+  width: 52px;
+  min-width: 52px;
+}
+
+.aps-table .aps-sticky-2 {
+  left: 52px;
+  width: 136px;
+  min-width: 136px;
+}
+
+.aps-table .aps-sticky-3 {
+  left: 188px;
+  width: 190px;
+  min-width: 190px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aps-table .aps-sticky-3::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: -1px;
+  width: 1px;
+  background: var(--c-line-strong);
+}
+
+.aps-table tbody tr:hover .aps-sticky-1,
+.aps-table tbody tr:hover .aps-sticky-2,
+.aps-table tbody tr:hover .aps-sticky-3 {
+  background: var(--c-surface-2);
+}
+
+/* --------------------------------------------------------------------------
+   Attendance codes
+   ----------------------------------------------------------------------- */
+
+.aps-code {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 var(--s-1);
+  border-radius: var(--r-sm);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.aps-code--H { background: var(--c-success-soft); color: var(--c-success); }
+.aps-code--S { background: var(--c-warning-soft); color: var(--c-warning); }
+.aps-code--I { background: var(--c-info-soft); color: var(--c-info); }
+.aps-code--A { background: var(--c-danger-soft); color: var(--c-danger); }
+.aps-code--empty { background: transparent; color: var(--c-faint); font-weight: 400; }
+
+/* A meeting that has not happened is visibly "not applicable", never an Alpa. */
+.aps-cell-pending {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--c-surface-3),
+    var(--c-surface-3) 3px,
+    var(--c-surface) 3px,
+    var(--c-surface) 7px
+  );
+}
+
+.aps-meeting-head {
+  text-align: center;
+  min-width: 44px;
+}
+
+.aps-meeting-head strong {
+  display: block;
+  color: var(--c-body);
+  font-size: var(--t-xs);
+}
+
+.aps-meeting-head span {
+  display: block;
+  font-size: 0.625rem;
+  font-weight: 500;
+  color: var(--c-faint);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.aps-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-4);
+  align-items: center;
+  font-size: var(--t-xs);
+  color: var(--c-muted);
+}
+
+.aps-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+
+/* --------------------------------------------------------------------------
+   Badges / pills
+   ----------------------------------------------------------------------- */
+
+.aps-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: 2px var(--s-2);
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  background: var(--c-surface-3);
+  color: var(--c-muted);
+}
+
+.aps-badge--success { background: var(--c-success-soft); color: var(--c-success); }
+.aps-badge--warning { background: var(--c-warning-soft); color: var(--c-warning); }
+.aps-badge--danger { background: var(--c-danger-soft); color: var(--c-danger); }
+.aps-badge--info { background: var(--c-info-soft); color: var(--c-info); }
+.aps-badge--brand { background: var(--c-brand-soft); color: var(--c-brand-strong); }
+
+.aps-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-full);
+  background: currentColor;
+}
+
+.aps-pct {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-variant-numeric: tabular-nums;
+}
+
+.aps-pct-bar {
+  width: 46px;
+  height: 5px;
+  border-radius: var(--r-full);
+  background: var(--c-surface-3);
+  overflow: hidden;
+}
+
+.aps-pct-bar i {
+  display: block;
+  height: 100%;
+  background: var(--c-brand);
+}
+
+.aps-pct--low .aps-pct-bar i { background: var(--c-danger); }
+.aps-pct--mid .aps-pct-bar i { background: var(--c-warning); }
+
+/* Face-match score on a row of the Absensi log. A pill rather than a bar: the
+   log is dense, and the number is the point — the reader compares it against a
+   threshold, not against the other rows. */
+.aps-acc {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px var(--s-2);
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  background: var(--c-surface-3);
+  color: var(--c-muted);
+}
+
+.aps-acc--high { background: var(--c-success-soft); color: var(--c-success); }
+.aps-acc--low { background: var(--c-warning-soft); color: var(--c-warning); }
+.aps-acc--none { background: transparent; color: var(--c-faint); font-weight: 400; }
+
+/* --------------------------------------------------------------------------
+   Kebab menu — one entry point for secondary row actions
+   ----------------------------------------------------------------------- */
+
+.aps-menu {
+  position: fixed;
+  z-index: 60;
+  display: block;
+  width: max-content;
+  min-width: 148px;
+  max-width: 220px;
+  height: auto;
+  overflow: visible;
+  padding: 5px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+}
+
+.aps-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--c-body);
+  font: inherit;
+  font-size: var(--t-sm);
+  line-height: 1.2;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* Icons carry the meaning at a glance, so the labels stay short. */
+.aps-menu button .aps-ico {
+  flex: 0 0 auto;
+  color: var(--c-faint);
+}
+
+.aps-menu button:hover .aps-ico {
+  color: inherit;
+}
+
+.aps-menu button:hover {
+  background: var(--c-surface-3);
+  color: var(--c-ink);
+}
+
+.aps-menu button.is-danger {
+  color: var(--c-danger);
+}
+
+.aps-menu button.is-danger:hover {
+  background: var(--c-danger-soft);
+}
+
+.aps-menu hr {
+  margin: 4px 6px;
+  border: 0;
+  border-top: 1px solid var(--c-line);
+}
+
+/* --------------------------------------------------------------------------
+   Drawer + dialog
+   ----------------------------------------------------------------------- */
+
+.aps-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(15, 23, 42, 0.36);
+}
+
+.aps-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 55;
+  width: min(440px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background: var(--c-surface);
+  border-left: 1px solid var(--c-line);
+  box-shadow: var(--shadow-3);
+}
+
+.aps-drawer-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-5);
+  border-bottom: 1px solid var(--c-line);
+}
+
+.aps-drawer-head h2 {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 650;
+  color: var(--c-ink);
+}
+
+.aps-drawer-head p {
+  margin: 2px 0 0;
+  font-size: var(--t-sm);
+  color: var(--c-muted);
+}
+
+.aps-drawer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.aps-drawer-foot {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-5);
+  border-top: 1px solid var(--c-line);
+  background: var(--c-surface-2);
+}
+
+.aps-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 56;
+  width: min(420px, calc(100vw - 32px));
+  background: var(--c-surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-3);
+  padding: var(--s-5);
+}
+
+.aps-dialog h2 {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-md);
+  color: var(--c-ink);
+}
+
+.aps-dialog p {
+  margin: 0 0 var(--s-5);
+  color: var(--c-muted);
+}
+
+.aps-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+
+/* --------------------------------------------------------------------------
+   Tabs
+   ----------------------------------------------------------------------- */
+
+.aps-tabs {
+  display: flex;
+  gap: var(--s-1);
+  border-bottom: 1px solid var(--c-line);
+}
+
+.aps-tab {
+  padding: var(--s-3) var(--s-4);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--c-muted);
+  font: inherit;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.aps-tab:hover {
+  color: var(--c-ink);
+}
+
+.aps-tab[aria-selected="true"] {
+  color: var(--c-brand-strong);
+  border-bottom-color: var(--c-brand);
+}
+
+/* --------------------------------------------------------------------------
+   Timetable
+   ----------------------------------------------------------------------- */
+
+.aps-timetable {
+  overflow: auto;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+}
+
+.aps-timetable table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  min-width: 760px;
+}
+
+.aps-timetable th,
+.aps-timetable td {
+  border-bottom: 1px solid var(--c-line);
+  border-right: 1px solid var(--c-line);
+  padding: 0;
+  vertical-align: top;
+}
+
+.aps-timetable thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: var(--s-3);
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.aps-timetable .aps-tt-time {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  width: 88px;
+  padding: var(--s-3);
+  background: var(--c-surface-2);
+  color: var(--c-muted);
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.aps-timetable thead .aps-tt-time {
+  z-index: 4;
+}
+
+.aps-tt-cell {
+  display: block;
+  width: 100%;
+  min-height: 62px;
+  padding: var(--s-2) var(--s-3);
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  color: var(--c-body);
+}
+
+.aps-tt-cell:hover {
+  background: var(--c-surface-2);
+}
+
+.aps-tt-cell--filled {
+  border-left: 3px solid var(--c-brand);
+  background: var(--c-brand-soft);
+}
+
+.aps-tt-cell--filled:hover {
+  background: #d7efec;
+}
+
+.aps-tt-cell strong {
+  display: block;
+  font-size: var(--t-sm);
+  color: var(--c-ink);
+  white-space: normal;
+}
+
+.aps-tt-cell span {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--c-muted);
+}
+
+.aps-tt-empty {
+  color: var(--c-faint);
+  font-size: var(--t-xs);
+}
+
+/* --------------------------------------------------------------------------
+   States: empty, loading, error, toast
+   ----------------------------------------------------------------------- */
+
+.aps-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-10) var(--s-6);
+  text-align: center;
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+}
+
+.aps-empty .aps-ico {
+  color: var(--c-faint);
+}
+
+.aps-empty h3 {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 650;
+  color: var(--c-ink);
+}
+
+.aps-empty p {
+  margin: 0;
+  max-width: 46ch;
+  color: var(--c-muted);
+}
+
+.aps-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  font-size: var(--t-sm);
+  background: var(--c-danger-soft);
+  color: var(--c-danger);
+  border: 1px solid #f6cfcb;
+}
+
+.aps-alert--info {
+  background: var(--c-info-soft);
+  color: var(--c-info);
+  border-color: #cddafa;
+  align-items: center;
+}
+
+.aps-alert--info .aps-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.aps-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.aps-skel {
+  height: 14px;
+  border-radius: var(--r-sm);
+  background: linear-gradient(90deg, var(--c-surface-3) 25%, #e9eef4 37%, var(--c-surface-3) 63%);
+  background-size: 400% 100%;
+  animation: aps-shimmer 1.3s ease infinite;
+}
+
+.aps-skel--row { height: 40px; }
+.aps-skel--card { height: 92px; }
+
+@keyframes aps-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aps-skel { animation: none; }
+  .aps-content { scroll-behavior: auto; }
+}
+
+.aps-toasts {
+  position: fixed;
+  right: var(--s-5);
+  bottom: var(--s-5);
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.aps-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 260px;
+  max-width: 380px;
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  background: var(--c-ink);
+  color: #fff;
+  font-size: var(--t-sm);
+  box-shadow: var(--shadow-2);
+}
+
+.aps-toast--success { background: var(--c-success); }
+.aps-toast--danger { background: var(--c-danger); }
+
+/* --------------------------------------------------------------------------
+   Definition lists used on detail pages
+   ----------------------------------------------------------------------- */
+
+.aps-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--s-4) var(--s-6);
+  margin: 0;
+}
+
+.aps-facts div {
+  min-width: 0;
+}
+
+.aps-facts dt {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--c-faint);
+}
+
+.aps-facts dd {
+  margin: var(--s-1) 0 0;
+  color: var(--c-ink);
+  overflow-wrap: anywhere;
+}
+
+.aps-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.aps-form label {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--c-body);
+}
+
+.aps-form .aps-hint {
+  font-weight: 400;
+  font-size: var(--t-xs);
+  color: var(--c-faint);
+}
+
+.aps-form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-4);
+}
+
+/* --------------------------------------------------------------------------
+   Responsive — desktop first, but tablet/phone stay usable
+   ----------------------------------------------------------------------- */
+
+.aps-menu-toggle {
+  display: none;
+}
+
+@media (max-width: 1024px) {
+  .aps { --sidebar-w: 210px; }
+  .aps-content { padding: var(--s-4); }
+}
+
+@media (max-width: 820px) {
+  .aps-menu-toggle {
+    display: inline-grid;
+  }
+
+  /* Sidebar becomes a drawer; the content keeps the full width. */
+  .aps-sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 58;
+    transform: translateX(-100%);
+    transition: transform 160ms ease;
+    box-shadow: var(--shadow-3);
+  }
+
+  .aps-shell[data-nav="open"] .aps-sidebar {
+    transform: translateX(0);
+  }
+
+  .aps-header {
+    padding: 0 var(--s-4);
+  }
+
+  .aps-header-title h1 {
+    font-size: var(--t-md);
+  }
+
+  .aps-content {
+    padding: var(--s-4) var(--s-3);
+  }
+
+  .aps-tablewrap {
+    max-height: none;
+  }
+
+  .aps-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .aps-drawer {
+    width: 100vw;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aps-sidebar { transition: none; }
+}
+
+/* --------------------------------------------------------------------------
+   Identity block on detail pages
+   ----------------------------------------------------------------------- */
+
+.aps-identity {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-5);
+  flex-wrap: wrap;
+}
+
+.aps-photo {
+  position: relative;
+  flex: 0 0 auto;
+  width: 96px;
+  height: 96px;
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: var(--c-surface-3);
+  border: 1px solid var(--c-line);
+}
+
+.aps-photo img {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Sits underneath the photo, so a missing or broken image reveals it without
+   any JavaScript error handling. */
+.aps-photo-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.75rem;
+  font-weight: 650;
+  color: var(--c-faint);
+}
+
+/* Kebab sits over the timetable cell without stealing its click target. */
+.aps-tt-menu {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 1;
+}
+
+.aps-tt-menu .aps-iconbtn {
+  width: 24px;
+  height: 24px;
+  opacity: 0;
+}
+
+td:hover > .aps-tt-menu .aps-iconbtn,
+.aps-tt-menu .aps-iconbtn:focus-visible {
+  opacity: 1;
+  background: var(--c-surface);
+}
+
+/* --------------------------------------------------------------------------
+   Logo field
+   ----------------------------------------------------------------------- */
+
+.aps-logo-field {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-4);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-lg);
+  background: var(--c-surface-2);
+}
+
+.aps-logo-preview {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 84px;
+  height: 84px;
+  padding: var(--s-2);
+  border: 1px solid var(--c-line);
+  border-radius: var(--r-md);
+  background: var(--c-surface);
+  overflow: hidden;
+}
+
+.aps-logo-preview img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.aps-logo-preview span {
+  font-size: var(--t-xs);
+  color: var(--c-faint);
+  text-align: center;
+}

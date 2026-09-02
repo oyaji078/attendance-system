@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone, time
 from uuid import UUID
 
-from sqlalchemy import and_, case, delete, func, or_, select, update
+from sqlalchemy import Text, and_, case, cast, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
 
@@ -89,7 +89,13 @@ class AttendanceRepository:
             AttendanceSession.is_active.is_(True),
             or_(
                 AttendanceSession.repeat_days.is_(None),
-                AttendanceSession.repeat_days.contains([today_wita]),
+                # Sessions saved without a schedule hold JSON null, not SQL
+                # NULL, so IS NULL alone hid every always-available session.
+                cast(AttendanceSession.repeat_days, Text) == "null",
+                # repeat_days is a plain JSON column, so .contains() compiles to
+                # `json LIKE text`, an operator Postgres does not have. Compare
+                # the rendered text instead; the quotes keep day names exact.
+                cast(AttendanceSession.repeat_days, Text).like(f'%"{today_wita}"%'),
             ),
             or_(
                 AttendanceSession.start_time.is_(None),

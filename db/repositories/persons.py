@@ -143,14 +143,30 @@ class PersonRepository:
         )
         return int(result.scalar_one())
 
-    async def create(self, student_id: str, full_name: str, email: str | None, class_id: UUID | None = None, is_active: bool = False) -> Person:
+    async def create(
+        self,
+        student_id: str,
+        full_name: str,
+        email: str | None,
+        class_id: UUID | None = None,
+        is_active: bool = False,
+        address: str | None = None,
+    ) -> Person:
         await self._ensure_student_id_available(student_id)
-        person = Person(student_id=student_id, full_name=full_name, email=email, class_id=class_id, is_active=is_active)
+        person = Person(student_id=student_id, full_name=full_name, email=email, address=address, class_id=class_id, is_active=is_active)
         self.session.add(person)
         await self.session.flush()
         return person
 
-    async def update(self, person_id: UUID, student_id: str, full_name: str, email: str | None, class_id: UUID | None = None) -> Person:
+    async def update(
+        self,
+        person_id: UUID,
+        student_id: str,
+        full_name: str,
+        email: str | None,
+        class_id: UUID | None = None,
+        address: str | None = None,
+    ) -> Person:
         person = await self.get_by_id(person_id)
         if person is None:
             raise LookupError(f"person {person_id} not found")
@@ -158,6 +174,7 @@ class PersonRepository:
         person.student_id = student_id
         person.full_name = full_name
         person.email = email
+        person.address = address
         person.class_id = class_id
         await self.session.flush()
         return person

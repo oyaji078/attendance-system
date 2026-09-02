@@ -112,6 +112,7 @@ class AdminService:
                 student_id=request.student_id,
                 full_name=request.full_name,
                 email=request.email,
+                address=request.address,
                 class_id=request.class_id,
                 is_active=request.is_active,
             )
@@ -129,6 +130,7 @@ class AdminService:
                 student_id=request.student_id,
                 full_name=request.full_name,
                 email=request.email,
+                address=request.address,
                 class_id=request.class_id,
             )
         except ValueError as exc:
@@ -198,6 +200,7 @@ class AdminService:
             student_id=projection.person.student_id,
             full_name=projection.person.full_name,
             email=projection.person.email,
+            address=projection.person.address,
             class_id=projection.person.class_id,
             class_code=projection.class_code,
             class_name=projection.class_name,

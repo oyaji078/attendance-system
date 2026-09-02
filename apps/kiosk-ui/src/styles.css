@@ -220,6 +220,36 @@ button.compact {
   margin: 0 auto;
 }
 
+/* Those two columns need 578px before gaps and padding, so on a phone they
+   forced the whole page wider than the viewport and every card, the title and
+   the mode switch got clipped at the right edge. */
+@media (max-width: 860px) {
+  .home-screen {
+    grid-template-columns: minmax(0, 1fr);
+    /* Stacked, the grid is shorter than the area it sits in, and the leftover
+       height was being handed to the rows — which is why every card looked
+       stretched with a pool of empty space inside it. */
+    align-content: start;
+  }
+}
+
+@media (max-width: 560px) {
+  .home-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stacked on a phone, the 220px floor left each card mostly empty and pushed
+     the rest of the page below the fold. */
+  .home-action {
+    min-height: 128px;
+  }
+
+  .home-copy {
+    padding: 18px;
+    gap: 6px;
+  }
+}
+
 .home-copy,
 .home-action,
 .identity-dialog,
@@ -227,8 +257,79 @@ button.compact {
 .device-panel {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.device-panel > summary {
+  padding: 12px 16px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--muted);
+  list-style: none;
+}
+
+.device-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.device-panel > summary::after {
+  content: "+";
+  float: right;
+  color: var(--muted);
+}
+
+.device-panel[open] > summary::after {
+  content: "\2212";
+}
+
+.device-status {
+  margin: 0;
+  padding: 4px 16px 14px;
+  display: grid;
+  gap: 2px;
+}
+
+.device-status-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.5fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 7px 0;
+  border-top: 1px solid var(--line);
+}
+
+.device-status-row:first-child {
+  border-top: 0;
+}
+
+.device-status-row dt {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.device-status-row dd {
+  margin: 0;
+  font-weight: 600;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.device-status-row dd[data-tone="ok"] {
+  color: #15803d;
+}
+
+.device-status-row dd[data-tone="bad"] {
+  color: #b91c1c;
+}
+
+.device-status-empty {
+  margin: 0;
+  padding: 4px 16px 14px;
+  color: var(--muted);
+  font-size: 0.86rem;
 }
 
 .home-copy {
@@ -406,6 +507,166 @@ button.compact {
   gap: 12px;
 }
 
+.attendance-matrix-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.attendance-matrix-controls label {
+  flex: 1 1 320px;
+  min-width: 260px;
+}
+
+.attendance-matrix-table-wrapper {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.attendance-matrix-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.attendance-matrix-header .matrix-title {
+  font-weight: 700;
+}
+
+.attendance-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.attendance-summary-card {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--surface-soft), var(--surface));
+  display: grid;
+  gap: 4px;
+}
+
+.attendance-summary-card span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.attendance-summary-card strong {
+  font-size: 1.15rem;
+}
+
+.attendance-matrix-table {
+  display: grid;
+  gap: 2px;
+}
+
+.attendance-matrix-row {
+  display: grid;
+  grid-template-columns: 220px repeat(auto-fit, minmax(48px, 1fr));
+  align-items: center;
+  gap: 2px;
+}
+
+.attendance-matrix-row--head {
+  font-weight: 700;
+  background: var(--surface-soft);
+  padding: 10px 12px;
+}
+
+.attendance-matrix-row > span {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+.attendance-matrix-row > span:first-child {
+  justify-content: flex-start;
+  text-align: left;
+  white-space: normal;
+}
+
+.attendance-progress-cell {
+  display: grid;
+  gap: 6px;
+  justify-content: center;
+  text-align: center;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+
+.attendance-progress-pill {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  font-weight: 800;
+  color: var(--success);
+}
+
+.attendance-progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.attendance-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--success), var(--accent));
+}
+
+.attendance-progress-cell small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.attendance-matrix-cell {
+  min-height: 44px;
+}
+
+.attendance-matrix-check {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-weight: 800;
+}
+
+.empty-state {
+  padding: 28px;
+  text-align: center;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
 .metric-card {
   padding: 14px;
   display: grid;
@@ -457,6 +718,16 @@ button.compact {
   display: grid;
   gap: 8px;
   min-width: 0;
+  /* Wide tables scroll inside their own box instead of pushing the whole page
+     sideways. The rows are grid children with fixed column minimums, so they
+     overflow this box and it takes the scrollbar. `min-content` is the sum of
+     the column minimums, so a table that already fits keeps fitting and only a
+     genuinely wide one scrolls. */
+  overflow-x: auto;
+}
+
+.data-table > * {
+  min-width: min-content;
 }
 
 .table-head,
@@ -524,18 +795,23 @@ button.compact {
   color: var(--success);
 }
 
+/* Faces read badly in a 42px circle — the crop cuts chin and forehead, which is
+   exactly what an operator checks. A larger rounded square keeps the whole
+   face visible. */
 .face-thumb,
 .avatar-mini {
-  width: 42px;
-  height: 42px;
-  border-radius: 999px;
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: #f8fafc;
 }
 
 .face-thumb.large,
 .avatar-mini.large {
-  width: 132px;
-  height: 132px;
-  border-radius: 16px;
+  width: 168px;
+  height: 168px;
+  border-radius: 18px;
 }
 
 .face-thumb {
@@ -1431,6 +1707,9 @@ video.is-mirrored {
   height: min(430px, 62vw);
 }
 
+/* The markup carries literal "<", ">", "^", "v" characters as a fallback. They
+   look like punctuation rather than guidance — especially the lowercase "v" —
+   so the glyph is hidden and a crisp chevron is drawn instead. */
 .direction-arrow {
   position: absolute;
   display: grid;
@@ -1440,11 +1719,40 @@ video.is-mirrored {
   border-radius: 999px;
   background: rgba(11, 15, 20, 0.46);
   color: white;
-  font-size: 3.2rem;
-  font-weight: 900;
+  font-size: 0;
   opacity: 0;
   transform: scale(0.88);
   transition: opacity 160ms ease, transform 160ms ease, background 160ms ease;
+}
+
+.direction-arrow::after {
+  content: "";
+  width: 20px;
+  height: 20px;
+  border-top: 5px solid currentColor;
+  border-right: 5px solid currentColor;
+  border-radius: 3px;
+}
+
+.arrow-left::after {
+  transform: translateX(3px) rotate(-135deg);
+}
+
+.arrow-right::after {
+  transform: translateX(-3px) rotate(45deg);
+}
+
+.arrow-up::after {
+  transform: translateY(3px) rotate(-45deg);
+}
+
+.arrow-down::after {
+  transform: translateY(-3px) rotate(135deg);
+}
+
+/* The rotate hint draws its own indicator via ::before. */
+.direction-arrow.is-turn::after {
+  content: none;
 }
 
 .direction-arrow.is-active {
@@ -1455,7 +1763,6 @@ video.is-mirrored {
 }
 
 .direction-arrow.is-turn {
-  font-size: 0;
   background: rgba(14, 95, 129, 0.94);
 }
 
@@ -1835,6 +2142,70 @@ video.is-mirrored {
 .app-shell[data-screen="recognize"] .recognition-card .debug-panel,
 .app-shell[data-screen="recognize"] .admin-panel-hidden {
   display: none !important;
+}
+
+/* ── Attendance class/session picker overlay ── */
+/* Docked to the bottom, never the centre: the face oval is centred at top 45%
+   and can be 430px tall, so a centred panel sits right on top of it. */
+.attendance-picker-overlay {
+  position: absolute;
+  z-index: 11;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: min(420px, calc(100% - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.94);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  text-align: center;
+}
+
+.attendance-picker-overlay .copy {
+  margin: 0;
+  color: #f8fafc;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.attendance-picker-overlay .session-picker {
+  display: block;
+}
+
+/* The heading above already says "Pilih Kelas"/"Pilih Sesi". */
+.attendance-picker-overlay .session-picker span {
+  display: none;
+}
+
+.attendance-picker-overlay select {
+  width: 100%;
+  padding: 11px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.5);
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 1rem;
+}
+
+@media (max-height: 620px) {
+  .attendance-picker-overlay {
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 10px 12px;
+    gap: 6px;
+  }
+
+  .attendance-picker-overlay .copy {
+    font-size: 0.9rem;
+  }
+
+  .attendance-picker-overlay select {
+    padding: 8px 12px;
+    font-size: 0.95rem;
+  }
 }
 
 /* ── Attendance top bar ── */
@@ -2271,8 +2642,12 @@ video.is-mirrored {
   box-shadow: none;
 }
 
+/* Utility class, so it has to win. Plain `display: none` lost to same-specificity
+   rules further down the file — notably `.enrollment-layout { display: grid }`
+   inside the <=980px media query, which left the whole attendance camera overlay
+   painted on top of the home screen on phones. */
 .is-hidden {
-  display: none;
+  display: none !important;
 }
 
 @keyframes nudge-left {
@@ -2450,11 +2825,27 @@ video.is-mirrored {
   }
 
   .attendance-top-bar {
-    padding: 10px 14px;
+    padding: 10px 12px;
+    gap: 8px;
   }
 
   .attendance-session-badge {
     font-size: 0.78rem;
+    max-width: 34vw;
+  }
+
+  /* Both buttons wrapped onto two lines and squeezed the session badge into an
+     ellipsis on a phone-width bar. */
+  .attendance-change-session-btn,
+  .attendance-close-btn {
+    white-space: nowrap;
+    font-size: 0.74rem;
+    padding: 7px 11px;
+    min-height: 34px;
+  }
+
+  .attendance-close-btn::before {
+    font-size: 1rem;
   }
 }
 
@@ -2680,4 +3071,356 @@ video.is-mirrored {
     height: 32px;
     font-size: 1.2rem;
   }
+}
+
+/* ===========================================================================
+   Jadwal, input absensi (H/S/I/A), dan rekap kehadiran.
+   Built from the same tokens as the rest of the admin panel so the new views
+   inherit the existing look instead of introducing a second style.
+   ======================================================================== */
+
+.academic-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+
+.academic-picker label {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 260px;
+  min-width: 200px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.academic-picker button {
+  flex: 0 0 auto;
+}
+
+/* --------------------------------- sheet -------------------------------- */
+
+.sheet-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.sheet-toolbar small {
+  color: var(--muted);
+  font-weight: 700;
+  margin-left: auto;
+}
+
+.attendance-sheet {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+/* Horizontal scroll lives on the table, never on the page body. */
+.sheet-table {
+  display: grid;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.sheet-row {
+  display: grid;
+  grid-template-columns: 48px minmax(110px, 0.8fr) minmax(150px, 1.6fr) 240px minmax(140px, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 720px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.sheet-row--head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  border: 0;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.sheet-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sheet-name {
+  font-weight: 700;
+}
+
+.sheet-status {
+  display: flex;
+  gap: 6px;
+}
+
+.sheet-note input {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+/* Radio styled as a tap target: one press per student, no dropdown to open. */
+.status-radio {
+  position: relative;
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  min-width: 44px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  font-weight: 900;
+  cursor: pointer;
+  user-select: none;
+}
+
+.status-radio input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.status-radio:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.status-radio:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.status-radio:has(input:checked) {
+  color: #fff;
+  border-color: transparent;
+}
+
+.status-radio.status-H:has(input:checked) {
+  background: var(--success);
+}
+
+.status-radio.status-S:has(input:checked) {
+  background: var(--warn);
+}
+
+.status-radio.status-I:has(input:checked) {
+  background: var(--accent);
+}
+
+.status-radio.status-A:has(input:checked) {
+  background: var(--danger);
+}
+
+.sheet-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* --------------------------------- rekap -------------------------------- */
+
+.recap-wrapper {
+  margin-top: 12px;
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.recap-table {
+  display: grid;
+  gap: 2px;
+  padding: 8px;
+  min-width: max-content;
+}
+
+.recap-row {
+  display: grid;
+  grid-template-columns: 44px 190px repeat(var(--recap-meetings, 12), 40px) repeat(4, 40px) 108px;
+  gap: 2px;
+  align-items: stretch;
+}
+
+.recap-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 6px 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* Sticky header row and sticky student column: the meeting columns scroll
+   under them, so a wide term stays readable without losing the name. */
+.recap-row--head .recap-cell {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--surface-soft);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.recap-no,
+.recap-name {
+  position: sticky;
+  z-index: 2;
+  background: var(--surface);
+}
+
+.recap-no {
+  left: 0;
+}
+
+.recap-name {
+  left: 44px;
+  justify-content: flex-start;
+  text-align: left;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.recap-row--head .recap-no {
+  left: 0;
+  z-index: 4;
+}
+
+.recap-row--head .recap-name {
+  left: 44px;
+  z-index: 4;
+}
+
+.recap-name small {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.72rem;
+}
+
+.recap-meeting.is-pending,
+.recap-status.is-pending {
+  background: repeating-linear-gradient(45deg, var(--surface-soft), var(--surface-soft) 4px, var(--surface) 4px, var(--surface) 8px);
+  color: var(--muted);
+}
+
+.recap-status.status-H {
+  background: var(--success-soft);
+  color: var(--success);
+}
+
+.recap-status.status-S {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.recap-status.status-I {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.recap-status.status-A {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.recap-total {
+  background: var(--surface-soft);
+}
+
+.recap-percent {
+  flex-direction: column;
+  gap: 0;
+  background: var(--surface-soft);
+}
+
+.recap-percent small {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.7rem;
+}
+
+.recap-footnote {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .academic-picker label {
+    flex: 1 1 100%;
+  }
+
+  .academic-picker button,
+  .sheet-toolbar button {
+    width: 100%;
+  }
+
+  .sheet-toolbar small {
+    margin-left: 0;
+  }
+
+  /* Phones: the note column is the first thing to go — status entry is what a
+     teacher actually needs at the front of the class. */
+  .sheet-row {
+    grid-template-columns: 40px minmax(96px, 0.8fr) minmax(130px, 1.4fr) 216px;
+    min-width: 560px;
+  }
+
+  .sheet-note {
+    display: none;
+  }
+
+  .recap-row {
+    grid-template-columns: 36px 140px repeat(var(--recap-meetings, 12), 36px) repeat(4, 34px) 92px;
+  }
+
+  .recap-name {
+    left: 36px;
+  }
+
+  .recap-row--head .recap-name {
+    left: 36px;
+  }
+
+  .recap-wrapper {
+    max-height: 65vh;
+  }
+}
+
+/* Separator before the "sesi tanpa jadwal" list inside the merged view. */
+.merged-section-head {
+  margin-top: 22px;
+  border-top: 2px solid var(--line);
+  border-radius: 8px;
 }

@@ -11,6 +11,7 @@ from app.core.config import Settings
 from app.core.csrf import CsrfProtection
 from app.core.security import verify_session_token
 from db.models.entities import AdminUser
+from db.repositories.academic import AcademicRepository
 from db.repositories.admin_users import AdminUserRepository
 from db.repositories.attendance import AttendanceRepository
 from db.repositories.device_configs import DeviceConfigRepository
@@ -18,6 +19,7 @@ from db.repositories.face_samples import FaceSampleRepository
 from db.repositories.face_templates import FaceTemplateRepository
 from db.repositories.metrics import MetricsRepository
 from db.repositories.persons import PersonRepository
+from services.academic.service import AcademicService
 from services.attendance.cache import RedisStateCache
 from services.auth_service import AuthService
 from services.attendance.service import AttendanceReadService
@@ -145,6 +147,12 @@ def get_recognition_service(session: AsyncSession = Depends(get_session), contai
         slow_request_ms=container.settings.recognition_slow_request_ms,
         challenge_service=container.challenge_service,
     )
+
+
+def get_academic_service(session: AsyncSession = Depends(get_session)) -> AcademicService:
+    # The attendance repository lets a jadwal own its kiosk session, so the
+    # merged Jadwal menu can manage both from one place.
+    return AcademicService(AcademicRepository(session), AttendanceRepository(session))
 
 
 def get_attendance_read_service(session: AsyncSession = Depends(get_session)) -> AttendanceReadService:
