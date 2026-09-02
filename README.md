@@ -238,6 +238,45 @@ Open http://localhost:8081 and log in:
 
 ---
 
+## Moving to another laptop
+
+Everything needed to continue on a different machine is in this repository: the code, the kiosk photos under `data/object-storage`, and a PostgreSQL snapshot at `transfer/db/attendance.dump`.
+
+The repository is **private**, and it must stay private — those photos and that dump contain face images, face embeddings, and student identities.
+
+The InsightFace model (~600 MB) is deliberately not stored here. The new machine downloads it instead.
+
+### On the new laptop
+
+```powershell
+git clone https://github.com/oyaji078/attendance-system.git
+cd attendance-system
+powershell -ExecutionPolicy Bypass -File .\scripts\setup-dev.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\download-insightface-buffalo-l.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\restore-transfer.ps1
+```
+
+`restore-transfer.ps1` starts Docker, restores the dump, and prints the row counts it recovered. It asks for confirmation before overwriting a database that already holds data; pass `-Force` to skip that prompt.
+
+Then run the app as usual (step 2 above).
+
+### Sending newer data across later
+
+On whichever laptop holds the newest data:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\export-transfer.ps1
+git add -A
+git commit -m "Update transferred data"
+git push
+```
+
+On the other laptop, `git pull` and run `restore-transfer.ps1` again.
+
+> `.env` is never committed. `setup-dev.ps1` creates it from `.env.example`, with paths relative to wherever you cloned the project, so no path needs editing by hand.
+
+---
+
 ## Handy commands
 
 | Task | Command |
@@ -250,6 +289,8 @@ Open http://localhost:8081 and log in:
 | Reset admin password | `.\scripts\reset-admin-password.ps1 -Username admin` |
 | Database shell | `.\scripts\db-shell.ps1` |
 | Show this PC's LAN IP | `.\scripts\show-local-ip.ps1` |
+| Refresh the transfer snapshot | `.\scripts\export-transfer.ps1` |
+| Restore the transfer snapshot | `.\scripts\restore-transfer.ps1` |
 
 (Prefix each with `powershell -ExecutionPolicy Bypass -File`.)
 

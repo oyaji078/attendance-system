@@ -18,6 +18,7 @@ logs/*.err.log
 logs/*.out.log
 data/*
 !data/.gitkeep
+!data/object-storage/
 models/*
 !models/.gitkeep
 *.gguf
